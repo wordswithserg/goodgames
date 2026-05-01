@@ -1,12 +1,13 @@
 import { useState, useEffect } from 'react';
 import { colors, fonts, card, button, input } from '../styles/theme';
-import { games } from '../data/games';
+import { getGameById } from '../data/games';
 import { GENRE_COLORS } from '../components/GameCard';
 import { useAuth } from '../contexts/AuthContext';
+import { supabase } from '../lib/supabase';
 import RequireAuth from '../components/auth/RequireAuth';
 
-function getGameById(id) {
-  return games.find(g => g.id === id);
+function formatDate(iso) {
+  return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 }
 
 function MemberAvatar({ name, size = 32, isYou = false }) {
@@ -69,28 +70,12 @@ function Countdown({ target }) {
   );
 }
 
-function PollSection({ poll, currentUser, squadId, setSquads }) {
-  const voted = poll.votes?.[currentUser];
-  const tallies = poll.tallies || poll.options.map(() => 0);
+// poll: { id, question, options, myVote (number|null), tallies }
+// castVote(optionIndex)
+function PollSection({ poll, castVote }) {
+  const hasVoted = poll.myVote !== null && poll.myVote !== undefined;
+  const tallies = poll.tallies;
   const total = tallies.reduce((a, b) => a + b, 0);
-
-  function castVote(i) {
-    if (voted !== undefined) return;
-    setSquads(sq => sq.map(s => {
-      if (s.id !== squadId) return s;
-      return {
-        ...s,
-        polls: s.polls.map(p => {
-          if (p.id !== poll.id) return p;
-          return {
-            ...p,
-            votes: { ...(p.votes || {}), [currentUser]: i },
-            tallies: (p.tallies || p.options.map(() => 0)).map((t, j) => j === i ? t + 1 : t),
-          };
-        }),
-      };
-    }));
-  }
 
   return (
     <div style={{ ...card, padding: '16px 20px', marginBottom: 12 }}>
@@ -99,8 +84,7 @@ function PollSection({ poll, currentUser, squadId, setSquads }) {
       </div>
       {poll.options.map((opt, i) => {
         const pct = total > 0 ? Math.round((tallies[i] / total) * 100) : 0;
-        const isMyVote = voted === i;
-        const hasVoted = voted !== undefined;
+        const isMyVote = poll.myVote === i;
         return (
           <div key={i} style={{ marginBottom: 8, position: 'relative' }}>
             <div style={{
@@ -110,7 +94,7 @@ function PollSection({ poll, currentUser, squadId, setSquads }) {
               background: colors.white,
               cursor: hasVoted ? 'default' : 'pointer',
             }}
-              onClick={() => castVote(i)}
+              onClick={() => !hasVoted && castVote(i)}
             >
               {hasVoted && (
                 <div style={{
@@ -159,13 +143,14 @@ function PollSection({ poll, currentUser, squadId, setSquads }) {
         );
       })}
       <div style={{ fontFamily: fonts.body, fontSize: 12, color: colors.muted, marginTop: 2 }}>
-        {total} vote{total !== 1 ? 's' : ''} · {voted !== undefined ? 'Voted' : 'Click an option to vote'}
+        {total} vote{total !== 1 ? 's' : ''} · {hasVoted ? 'Voted' : 'Click an option to vote'}
       </div>
     </div>
   );
 }
 
-function CreatePollForm({ squadId, setSquads }) {
+// onCreate(question, options[])
+function CreatePollForm({ onCreate }) {
   const [question, setQuestion] = useState('What should we play next?');
   const [options, setOptions] = useState(['', '']);
 
@@ -185,14 +170,7 @@ function CreatePollForm({ squadId, setSquads }) {
   function submit() {
     const filled = options.map(o => o.trim()).filter(Boolean);
     if (filled.length < 2) return;
-    const poll = {
-      id: Date.now().toString(),
-      question: question.trim() || 'What should we play next?',
-      options: filled,
-      votes: {},
-      tallies: filled.map(() => 0),
-    };
-    setSquads(sq => sq.map(s => s.id === squadId ? { ...s, polls: [poll, ...s.polls] } : s));
+    onCreate(question.trim() || 'What should we play next?', filled);
     setQuestion('What should we play next?');
     setOptions(['', '']);
   }
@@ -252,45 +230,23 @@ function CreatePollForm({ squadId, setSquads }) {
   );
 }
 
-function ThreadSection({ squadId, squads, setSquads, currentUser }) {
-  const squad = squads.find(s => s.id === squadId);
-  const threads = squad?.threads || [];
+// threads: [{ id, title, author, date, replies: [{ id, author, body, date }] }]
+// onCreateThread(title), onAddReply(threadId, body)
+function ThreadSection({ threads, onCreateThread, onAddReply, currentUser }) {
   const [newTitle, setNewTitle] = useState('');
   const [replyText, setReplyText] = useState({});
   const [openThread, setOpenThread] = useState(null);
 
   function createThread() {
     if (!newTitle.trim()) return;
-    const thread = {
-      id: Date.now().toString(),
-      title: newTitle.trim(),
-      author: currentUser,
-      date: new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
-      replies: [],
-    };
-    setSquads(sq => sq.map(s => s.id === squadId ? { ...s, threads: [thread, ...s.threads] } : s));
+    onCreateThread(newTitle.trim());
     setNewTitle('');
-    setOpenThread(thread.id);
   }
 
   function addReply(threadId) {
     const text = (replyText[threadId] || '').trim();
     if (!text) return;
-    const reply = {
-      id: Date.now().toString(),
-      author: currentUser,
-      body: text,
-      date: new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
-    };
-    setSquads(sq => sq.map(s => {
-      if (s.id !== squadId) return s;
-      return {
-        ...s,
-        threads: s.threads.map(t =>
-          t.id === threadId ? { ...t, replies: [...t.replies, reply] } : t
-        ),
-      };
-    }));
+    onAddReply(threadId, text);
     setReplyText(r => ({ ...r, [threadId]: '' }));
   }
 
@@ -379,60 +335,390 @@ function ThreadSection({ squadId, squads, setSquads, currentUser }) {
   );
 }
 
-export default function SquadPage({ squads, setSquads }) {
-  const { profile, loading, isLoggedIn } = useAuth();
+// selected: [{id, username}], onAdd(user), onRemove(userId), excludeUsernames: string[]
+function MemberSearchInput({ selected, onAdd, onRemove, excludeUsernames = [], placeholder = 'Search usernames…' }) {
+  const [query, setQuery] = useState('');
+  const [suggestions, setSuggestions] = useState([]);
+  const [searching, setSearching] = useState(false);
+  const [open, setOpen] = useState(false);
+
+  useEffect(() => {
+    if (!query.trim()) { setSuggestions([]); setOpen(false); return; }
+    const t = setTimeout(async () => {
+      setSearching(true);
+      const { data } = await supabase
+        .from('profiles')
+        .select('id, username')
+        .ilike('username', `${query.trim()}%`)
+        .limit(8);
+      const filtered = (data || []).filter(u => !excludeUsernames.includes(u.username));
+      setSuggestions(filtered);
+      setOpen(true);
+      setSearching(false);
+    }, 200);
+    return () => clearTimeout(t);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [query]);
+
+  function pick(user) {
+    onAdd(user);
+    setQuery('');
+    setSuggestions([]);
+    setOpen(false);
+  }
+
+  return (
+    <div style={{ position: 'relative' }}>
+      {selected.length > 0 && (
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 8 }}>
+          {selected.map(u => (
+            <div key={u.id} style={{
+              display: 'flex', alignItems: 'center', gap: 4,
+              background: colors.navy, color: colors.white,
+              borderRadius: 14, padding: '3px 8px 3px 10px',
+              fontFamily: fonts.body, fontSize: 13,
+            }}>
+              {u.username}
+              <button
+                onClick={() => onRemove(u.id)}
+                style={{ background: 'none', border: 'none', color: 'rgba(255,255,255,0.7)', cursor: 'pointer', padding: '0 0 0 2px', fontSize: 15, lineHeight: 1 }}
+              >×</button>
+            </div>
+          ))}
+        </div>
+      )}
+      <input
+        type="text"
+        placeholder={placeholder}
+        value={query}
+        onChange={e => setQuery(e.target.value)}
+        onFocus={() => suggestions.length > 0 && setOpen(true)}
+        onBlur={() => setTimeout(() => setOpen(false), 150)}
+        style={{ ...input.base, fontSize: 14 }}
+      />
+      {open && (
+        <div style={{
+          position: 'absolute', top: '100%', left: 0, right: 0, zIndex: 100,
+          background: colors.white, border: `1px solid ${colors.border}`,
+          borderRadius: 6, boxShadow: '0 4px 12px rgba(0,0,0,0.1)', marginTop: 2,
+        }}>
+          {searching && (
+            <div style={{ padding: '10px 14px', fontFamily: fonts.body, fontSize: 13, color: colors.muted }}>
+              Searching…
+            </div>
+          )}
+          {!searching && suggestions.length === 0 && (
+            <div style={{ padding: '10px 14px', fontFamily: fonts.body, fontSize: 13, color: colors.muted }}>
+              No users found for "{query}"
+            </div>
+          )}
+          {!searching && suggestions.map(u => (
+            <div
+              key={u.id}
+              onMouseDown={() => pick(u)}
+              style={{ padding: '9px 14px', cursor: 'pointer', fontFamily: fonts.body, fontSize: 14, color: colors.text, display: 'flex', alignItems: 'center', gap: 8 }}
+              onMouseEnter={e => e.currentTarget.style.background = colors.lightBg}
+              onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
+            >
+              <MemberAvatar name={u.username} size={24} />
+              {u.username}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+export default function SquadPage() {
+  const { user, profile, loading, isLoggedIn } = useAuth();
   const currentUser = profile?.username || null;
+
+  const [squads, setSquads] = useState([]);
+  const [squadsLoading, setSquadsLoading] = useState(true);
+  const [activeSquadId, setActiveSquadId] = useState(null);
+  const [polls, setPolls] = useState([]);
+  const [threads, setThreads] = useState([]);
+  const [topGames, setTopGames] = useState([]);
+  const [detailLoading, setDetailLoading] = useState(false);
   const [creating, setCreating] = useState(false);
   const [squadName, setSquadName] = useState('');
-  const [membersInput, setMembersInput] = useState('');
-  const [activeSquadId, setActiveSquadId] = useState(null);
+  const [invitedMembers, setInvitedMembers] = useState([]);
+  const [addingMember, setAddingMember] = useState(false);
+  const [newMembers, setNewMembers] = useState([]);
   const [meetupInput, setMeetupInput] = useState('');
+  const [submitting, setSubmitting] = useState(false);
 
-  const userSquads = squads.filter(s =>
-    s.members.includes(currentUser) || s.owner === currentUser
-  );
-
-  const resolvedId = activeSquadId || userSquads[0]?.id || null;
+  const resolvedId = activeSquadId || squads[0]?.id || null;
   const currentSquad = resolvedId ? squads.find(s => s.id === resolvedId) : null;
 
-  function createSquad() {
-    if (!squadName.trim()) return;
-    const members = [
-      currentUser,
-      ...membersInput.split(',').map(m => m.trim()).filter(m => m && m !== currentUser),
+  // ── data loaders ──────────────────────────────────────────────────────────
+
+  async function loadSquads() {
+    if (!user?.id) return;
+    const { data: memberRows } = await supabase
+      .from('squad_members')
+      .select('squad_id')
+      .eq('user_id', user.id);
+
+    if (!memberRows?.length) {
+      setSquads([]);
+      setSquadsLoading(false);
+      return;
+    }
+
+    const squadIds = memberRows.map(r => r.squad_id);
+
+    const [{ data: squadRows }, { data: allMemberRows }] = await Promise.all([
+      supabase
+        .from('squads')
+        .select('id, name, owner_id, meetup_date')
+        .in('id', squadIds)
+        .order('created_at', { ascending: false }),
+      supabase
+        .from('squad_members')
+        .select('squad_id, user_id')
+        .in('squad_id', squadIds),
+    ]);
+
+    const uniqueUserIds = [...new Set((allMemberRows || []).map(m => m.user_id))];
+    const { data: profileRows } = await supabase
+      .from('profiles')
+      .select('id, username')
+      .in('id', uniqueUserIds);
+
+    const profileMap = Object.fromEntries((profileRows || []).map(p => [p.id, p.username]));
+
+    const assembled = (squadRows || []).map(s => ({
+      ...s,
+      members: (allMemberRows || [])
+        .filter(m => m.squad_id === s.id)
+        .map(m => ({ user_id: m.user_id, username: profileMap[m.user_id] || 'unknown' })),
+    }));
+
+    setSquads(assembled);
+    setSquadsLoading(false);
+  }
+
+  async function loadPolls(squadId) {
+    const { data: pollRows } = await supabase
+      .from('polls')
+      .select('id, question, options, created_at')
+      .eq('squad_id', squadId)
+      .order('created_at', { ascending: false });
+
+    if (!pollRows?.length) { setPolls([]); return; }
+
+    const pollIds = pollRows.map(p => p.id);
+
+    const [{ data: myVoteRows }, { data: allVoteRows }] = await Promise.all([
+      supabase.from('poll_votes').select('poll_id, option_index').eq('user_id', user.id).in('poll_id', pollIds),
+      supabase.from('poll_votes').select('poll_id, option_index').in('poll_id', pollIds),
+    ]);
+
+    const assembled = pollRows.map(p => {
+      const myVoteRow = (myVoteRows || []).find(v => v.poll_id === p.id);
+      const tallies = p.options.map((_, i) =>
+        (allVoteRows || []).filter(v => v.poll_id === p.id && v.option_index === i).length
+      );
+      return {
+        id: p.id,
+        question: p.question,
+        options: p.options,
+        myVote: myVoteRow?.option_index ?? null,
+        tallies,
+      };
+    });
+
+    setPolls(assembled);
+  }
+
+  async function loadThreads(squadId) {
+    const { data: threadRows } = await supabase
+      .from('threads')
+      .select('id, title, created_at, user_id')
+      .eq('squad_id', squadId)
+      .order('created_at', { ascending: false });
+
+    if (!threadRows?.length) { setThreads([]); return; }
+
+    const threadIds = threadRows.map(t => t.id);
+    const { data: replyRows } = await supabase
+      .from('replies')
+      .select('id, thread_id, body, created_at, user_id')
+      .in('thread_id', threadIds)
+      .order('created_at', { ascending: true });
+
+    const allUserIds = [
+      ...new Set([
+        ...threadRows.map(t => t.user_id),
+        ...(replyRows || []).map(r => r.user_id),
+      ]),
     ];
-    const squad = {
-      id: Date.now().toString(),
-      name: squadName.trim(),
-      owner: currentUser,
-      members,
-      polls: [],
-      threads: [],
-      nextMeetup: null,
-    };
-    setSquads(sq => [squad, ...sq]);
+    const { data: profileRows } = await supabase
+      .from('profiles')
+      .select('id, username')
+      .in('id', allUserIds);
+
+    const profileMap = Object.fromEntries((profileRows || []).map(p => [p.id, p.username]));
+
+    const assembled = threadRows.map(t => ({
+      id: t.id,
+      title: t.title,
+      author: profileMap[t.user_id] || 'unknown',
+      date: formatDate(t.created_at),
+      replies: (replyRows || [])
+        .filter(r => r.thread_id === t.id)
+        .map(r => ({
+          id: r.id,
+          author: profileMap[r.user_id] || 'unknown',
+          body: r.body,
+          date: formatDate(r.created_at),
+        })),
+    }));
+
+    setThreads(assembled);
+  }
+
+  async function loadTopGames(squad) {
+    const memberIds = squad.members.map(m => m.user_id);
+    if (!memberIds.length) { setTopGames([]); return; }
+
+    const { data: top10Rows } = await supabase
+      .from('top10')
+      .select('user_id, game_id, rank')
+      .in('user_id', memberIds);
+
+    if (!top10Rows?.length) { setTopGames([]); return; }
+
+    const scores = {};
+    top10Rows.forEach(row => {
+      const pts = 11 - row.rank;
+      scores[row.game_id] = (scores[row.game_id] || 0) + pts;
+    });
+
+    const ranked = Object.entries(scores)
+      .map(([game_id, score]) => ({ game: getGameById(Number(game_id)), score }))
+      .filter(({ game }) => game)
+      .sort((a, b) => b.score - a.score)
+      .slice(0, 5);
+
+    setTopGames(ranked);
+  }
+
+  // ── effects ───────────────────────────────────────────────────────────────
+
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { if (user?.id) loadSquads(); }, [user?.id]);
+
+  useEffect(() => {
+    if (!resolvedId) return;
+    const squad = squads.find(s => s.id === resolvedId);
+    if (!squad) return;
+    setAddingMember(false);
+    setNewMembers([]);
+    setDetailLoading(true);
+    Promise.all([loadPolls(resolvedId), loadThreads(resolvedId), loadTopGames(squad)])
+      .finally(() => setDetailLoading(false));
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [resolvedId]);
+
+  // ── mutations ─────────────────────────────────────────────────────────────
+
+  async function createSquad() {
+    if (!squadName.trim() || submitting) return;
+    setSubmitting(true);
+
+    const { data: squad, error } = await supabase
+      .from('squads')
+      .insert({ name: squadName.trim(), owner_id: user.id })
+      .select('id')
+      .single();
+
+    if (error) { setSubmitting(false); return; }
+
+    await supabase.from('squad_members').insert({ squad_id: squad.id, user_id: user.id });
+
+    for (const m of invitedMembers) {
+      await supabase.from('squad_members').insert({ squad_id: squad.id, user_id: m.id });
+    }
+
+    await loadSquads();
     setActiveSquadId(squad.id);
     setCreating(false);
     setSquadName('');
-    setMembersInput('');
+    setInvitedMembers([]);
+    setSubmitting(false);
   }
 
-  function setMeetup(squadId) {
+  async function addMemberToSquad(squadId, members) {
+    for (const m of members) {
+      await supabase.from('squad_members').insert({ squad_id: squadId, user_id: m.id });
+    }
+    await loadSquads();
+    setAddingMember(false);
+    setNewMembers([]);
+  }
+
+  async function castVote(pollId, optionIndex) {
+    setPolls(prev => prev.map(p => {
+      if (p.id !== pollId) return p;
+      return {
+        ...p,
+        myVote: optionIndex,
+        tallies: p.tallies.map((t, i) => i === optionIndex ? t + 1 : t),
+      };
+    }));
+
+    const { error } = await supabase
+      .from('poll_votes')
+      .insert({ poll_id: pollId, user_id: user.id, option_index: optionIndex });
+
+    if (error) {
+      setPolls(prev => prev.map(p => {
+        if (p.id !== pollId) return p;
+        return {
+          ...p,
+          myVote: null,
+          tallies: p.tallies.map((t, i) => i === optionIndex ? t - 1 : t),
+        };
+      }));
+    }
+  }
+
+  async function createPoll(question, options) {
+    const { error } = await supabase
+      .from('polls')
+      .insert({ squad_id: resolvedId, question, options });
+    if (!error) await loadPolls(resolvedId);
+  }
+
+  async function createThread(title) {
+    const { error } = await supabase
+      .from('threads')
+      .insert({ squad_id: resolvedId, user_id: user.id, title });
+    if (!error) await loadThreads(resolvedId);
+  }
+
+  async function addReply(threadId, body) {
+    const { error } = await supabase
+      .from('replies')
+      .insert({ thread_id: threadId, user_id: user.id, body });
+    if (!error) await loadThreads(resolvedId);
+  }
+
+  async function saveMeetup(squadId) {
     if (!meetupInput) return;
-    setSquads(sq => sq.map(s => s.id === squadId ? { ...s, nextMeetup: meetupInput } : s));
+    await supabase.from('squads').update({ meetup_date: meetupInput }).eq('id', squadId);
+    setSquads(prev => prev.map(s => s.id === squadId ? { ...s, meetup_date: meetupInput } : s));
     setMeetupInput('');
   }
 
-  // Squad top games aggregation is pending Supabase migration for cross-user top10 lookup.
-  function getTopGames(_squad) {
-    return [];
-  }
-
-
+  // ── render ────────────────────────────────────────────────────────────────
 
   if (loading) return null;
   if (!isLoggedIn) return <RequireAuth message="Log in to view your squads." />;
-  if (!currentUser) return null; // logged in but profile still resolving
+  if (!currentUser) return null;
 
   return (
     <div style={{ maxWidth: 960, margin: '0 auto', padding: '32px 24px', display: 'flex', gap: 24, alignItems: 'flex-start' }}>
@@ -450,7 +736,11 @@ export default function SquadPage({ squads, setSquads }) {
           Your Squads
         </div>
 
-        {userSquads.map(s => (
+        {squadsLoading ? (
+          <div style={{ fontFamily: fonts.body, fontSize: 13, color: colors.muted, padding: '8px 0' }}>
+            Loading…
+          </div>
+        ) : squads.map(s => (
           <div
             key={s.id}
             onClick={() => { setActiveSquadId(s.id); setCreating(false); }}
@@ -511,20 +801,26 @@ export default function SquadPage({ squads, setSquads }) {
             <div style={{ marginBottom: 16 }}>
               <label style={{ fontFamily: fonts.body, fontSize: 13, fontWeight: 600, color: colors.text, display: 'block', marginBottom: 6 }}>
                 Invite Members{' '}
-                <span style={{ fontWeight: 400, color: colors.muted }}>(usernames, comma-separated)</span>
+                <span style={{ fontWeight: 400, color: colors.muted }}>(optional — you can add members later)</span>
               </label>
-              <input
-                type="text"
-                placeholder="e.g. alex, sam, casey"
-                value={membersInput}
-                onChange={e => setMembersInput(e.target.value)}
-                style={{ ...input.base, fontSize: 14 }}
+              <MemberSearchInput
+                selected={invitedMembers}
+                onAdd={u => setInvitedMembers(prev => [...prev, u])}
+                onRemove={id => setInvitedMembers(prev => prev.filter(u => u.id !== id))}
+                excludeUsernames={[profile.username, ...invitedMembers.map(u => u.username)]}
+                placeholder="Search for a member…"
               />
             </div>
             <div style={{ display: 'flex', gap: 10 }}>
-              <button onClick={createSquad} style={button.primary}>Create Squad</button>
               <button
-                onClick={() => { setCreating(false); setSquadName(''); setMembersInput(''); }}
+                onClick={createSquad}
+                disabled={submitting}
+                style={{ ...button.primary, opacity: submitting ? 0.6 : 1, cursor: submitting ? 'not-allowed' : 'pointer' }}
+              >
+                {submitting ? 'Creating…' : 'Create Squad'}
+              </button>
+              <button
+                onClick={() => { setCreating(false); setSquadName(''); setInvitedMembers([]); }}
                 style={button.ghost}
               >
                 Cancel
@@ -534,7 +830,7 @@ export default function SquadPage({ squads, setSquads }) {
         )}
 
         {/* Empty state */}
-        {!currentSquad && !creating && (
+        {!currentSquad && !creating && !squadsLoading && (
           <div style={{ textAlign: 'center', padding: '60px 24px', ...card }}>
             <div style={{ fontSize: 48, marginBottom: 16 }}>🎮</div>
             <h2 style={{ fontFamily: fonts.heading, fontSize: 22, color: colors.text, marginBottom: 8 }}>
@@ -557,153 +853,187 @@ export default function SquadPage({ squads, setSquads }) {
               <h1 style={{ fontFamily: fonts.heading, fontSize: 28, fontWeight: 700, color: colors.text, margin: '0 0 12px' }}>
                 {currentSquad.name}
               </h1>
-              {/* Member avatars */}
               <div style={{ display: 'flex', alignItems: 'center', gap: 0, flexWrap: 'wrap' }}>
                 {currentSquad.members.map((m, i) => (
                   <div
-                    key={m}
-                    title={m === currentUser ? `${m} (you)` : m}
+                    key={m.user_id}
+                    title={m.username === currentUser ? `${m.username} (you)` : m.username}
                     style={{ marginLeft: i === 0 ? 0 : -8, zIndex: currentSquad.members.length - i }}
                   >
-                    <MemberAvatar name={m} size={36} isYou={m === currentUser} />
+                    <MemberAvatar name={m.username} size={36} isYou={m.username === currentUser} />
                   </div>
                 ))}
                 <div style={{ marginLeft: 14 }}>
-                  {currentSquad.members.map(m => (
-                    <span key={m} style={{
+                  {currentSquad.members.map((m, i) => (
+                    <span key={m.user_id} style={{
                       fontFamily: fonts.body,
                       fontSize: 13,
-                      color: m === currentUser ? colors.orange : colors.text,
-                      fontWeight: m === currentUser ? 700 : 400,
+                      color: m.username === currentUser ? colors.orange : colors.text,
+                      fontWeight: m.username === currentUser ? 700 : 400,
                     }}>
-                      {m === currentUser ? `${m} (you)` : m}
-                      {m !== currentSquad.members[currentSquad.members.length - 1] ? ', ' : ''}
+                      {m.username === currentUser ? `${m.username} (you)` : m.username}
+                      {i < currentSquad.members.length - 1 ? ', ' : ''}
                     </span>
                   ))}
                 </div>
               </div>
+
+              {/* Add member */}
+              {!addingMember ? (
+                <button
+                  onClick={() => setAddingMember(true)}
+                  style={{ ...button.ghost, marginTop: 12, fontSize: 13, padding: '5px 12px' }}
+                >
+                  + Add member
+                </button>
+              ) : (
+                <div style={{ marginTop: 12, display: 'flex', gap: 8, alignItems: 'flex-start' }}>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <MemberSearchInput
+                      selected={newMembers}
+                      onAdd={u => setNewMembers(prev => [...prev, u])}
+                      onRemove={id => setNewMembers(prev => prev.filter(u => u.id !== id))}
+                      excludeUsernames={currentSquad.members.map(m => m.username).concat(newMembers.map(u => u.username))}
+                      placeholder="Search for a member…"
+                    />
+                  </div>
+                  <button
+                    onClick={() => addMemberToSquad(currentSquad.id, newMembers)}
+                    disabled={newMembers.length === 0}
+                    style={{ ...button.secondary, fontSize: 13, padding: '8px 14px', opacity: newMembers.length === 0 ? 0.5 : 1, cursor: newMembers.length === 0 ? 'not-allowed' : 'pointer', whiteSpace: 'nowrap' }}
+                  >
+                    Add
+                  </button>
+                  <button
+                    onClick={() => { setAddingMember(false); setNewMembers([]); }}
+                    style={{ ...button.ghost, fontSize: 13, padding: '8px 14px', whiteSpace: 'nowrap' }}
+                  >
+                    Cancel
+                  </button>
+                </div>
+              )}
             </div>
 
-            {/* Top Games */}
-            <div style={{ ...card, padding: '18px 22px', marginBottom: 20 }}>
-              <h2 style={{ fontFamily: fonts.heading, fontSize: 18, fontWeight: 700, color: colors.text, margin: '0 0 14px' }}>
-                Squad's Top Games
-              </h2>
-              {(() => {
-                const topGames = getTopGames(currentSquad);
-                if (topGames.length === 0) {
-                  return (
+            {detailLoading ? (
+              <div style={{ fontFamily: fonts.body, fontSize: 14, color: colors.muted, padding: '40px 0', textAlign: 'center' }}>
+                Loading…
+              </div>
+            ) : (
+              <>
+                {/* Top Games */}
+                <div style={{ ...card, padding: '18px 22px', marginBottom: 20 }}>
+                  <h2 style={{ fontFamily: fonts.heading, fontSize: 18, fontWeight: 700, color: colors.text, margin: '0 0 14px' }}>
+                    Squad's Top Games
+                  </h2>
+                  {topGames.length === 0 ? (
                     <p style={{ fontFamily: fonts.body, fontSize: 13, color: colors.muted }}>
                       Squad members need to add games to their Top 10 on their Player page first.
                     </p>
-                  );
-                }
-                return topGames.map(({ game, score }, idx) => {
-                  const gc = GENRE_COLORS[game.genre] || { bg: '#EEE', text: '#555' };
-                  return (
-                    <div key={game.id} style={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: 12,
-                      padding: '9px 0',
-                      borderBottom: idx < topGames.length - 1 ? `1px solid ${colors.border}` : 'none',
-                    }}>
-                      <span style={{ fontFamily: fonts.heading, fontSize: 16, fontWeight: 700, color: colors.muted, width: 22, textAlign: 'right', flexShrink: 0 }}>
-                        {idx + 1}
-                      </span>
-                      <div style={{ width: 28, height: 28, borderRadius: 6, background: game.coverColor, flexShrink: 0 }} />
-                      <div style={{ flex: 1 }}>
-                        <div style={{ fontFamily: fonts.body, fontWeight: 600, fontSize: 14, color: colors.text }}>{game.title}</div>
-                        <span style={{
-                          background: gc.bg, color: gc.text,
-                          fontSize: 10, fontWeight: 700, padding: '1px 6px', borderRadius: 8,
-                          textTransform: 'uppercase', letterSpacing: '0.4px', fontFamily: fonts.body,
-                        }}>
-                          {game.genreLabel}
+                  ) : topGames.map(({ game, score }, idx) => {
+                    const gc = GENRE_COLORS[game.genre] || { bg: '#EEE', text: '#555' };
+                    return (
+                      <div key={game.id} style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 12,
+                        padding: '9px 0',
+                        borderBottom: idx < topGames.length - 1 ? `1px solid ${colors.border}` : 'none',
+                      }}>
+                        <span style={{ fontFamily: fonts.heading, fontSize: 16, fontWeight: 700, color: colors.muted, width: 22, textAlign: 'right', flexShrink: 0 }}>
+                          {idx + 1}
+                        </span>
+                        <div style={{ width: 28, height: 28, borderRadius: 6, background: game.coverColor, flexShrink: 0 }} />
+                        <div style={{ flex: 1 }}>
+                          <div style={{ fontFamily: fonts.body, fontWeight: 600, fontSize: 14, color: colors.text }}>{game.title}</div>
+                          <span style={{
+                            background: gc.bg, color: gc.text,
+                            fontSize: 10, fontWeight: 700, padding: '1px 6px', borderRadius: 8,
+                            textTransform: 'uppercase', letterSpacing: '0.4px', fontFamily: fonts.body,
+                          }}>
+                            {game.genreLabel}
+                          </span>
+                        </div>
+                        <span style={{ fontFamily: fonts.body, fontSize: 12, color: colors.muted, flexShrink: 0 }}>
+                          {score} pts
                         </span>
                       </div>
-                      <span style={{ fontFamily: fonts.body, fontSize: 12, color: colors.muted, flexShrink: 0 }}>
-                        {score} pts
-                      </span>
+                    );
+                  })}
+                </div>
+
+                {/* Polls */}
+                <div style={{ ...card, padding: '18px 22px', marginBottom: 20 }}>
+                  <h2 style={{ fontFamily: fonts.heading, fontSize: 18, fontWeight: 700, color: colors.text, margin: '0 0 14px' }}>
+                    Polls
+                  </h2>
+                  <CreatePollForm onCreate={createPoll} />
+                  {polls.length === 0 && (
+                    <p style={{ fontFamily: fonts.body, fontSize: 13, color: colors.muted, textAlign: 'center', padding: '4px 0 8px' }}>
+                      No polls yet. Create one above!
+                    </p>
+                  )}
+                  {polls.map(poll => (
+                    <PollSection
+                      key={poll.id}
+                      poll={poll}
+                      castVote={i => castVote(poll.id, i)}
+                    />
+                  ))}
+                </div>
+
+                {/* Next Meetup */}
+                <div style={{ ...card, padding: '18px 22px', marginBottom: 20 }}>
+                  <h2 style={{ fontFamily: fonts.heading, fontSize: 18, fontWeight: 700, color: colors.text, margin: '0 0 14px' }}>
+                    Next Game Night
+                  </h2>
+                  {currentSquad.meetup_date ? (
+                    <div style={{ marginBottom: 14 }}>
+                      <div style={{ fontFamily: fonts.body, fontSize: 15, color: colors.text, marginBottom: 6 }}>
+                        📅 {new Date(currentSquad.meetup_date).toLocaleString('en-US', {
+                          weekday: 'long', month: 'long', day: 'numeric',
+                          hour: 'numeric', minute: '2-digit',
+                        })}
+                      </div>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                        <span style={{ fontFamily: fonts.body, fontSize: 13, color: colors.muted }}>Countdown: </span>
+                        <Countdown target={currentSquad.meetup_date} />
+                      </div>
                     </div>
-                  );
-                });
-              })()}
-            </div>
-
-            {/* Polls */}
-            <div style={{ ...card, padding: '18px 22px', marginBottom: 20 }}>
-              <h2 style={{ fontFamily: fonts.heading, fontSize: 18, fontWeight: 700, color: colors.text, margin: '0 0 14px' }}>
-                Polls
-              </h2>
-              <CreatePollForm squadId={currentSquad.id} setSquads={setSquads} />
-              {(currentSquad.polls || []).length === 0 && (
-                <p style={{ fontFamily: fonts.body, fontSize: 13, color: colors.muted, textAlign: 'center', padding: '4px 0 8px' }}>
-                  No polls yet. Create one above!
-                </p>
-              )}
-              {(currentSquad.polls || []).map(poll => (
-                <PollSection
-                  key={poll.id}
-                  poll={poll}
-                  currentUser={currentUser}
-                  squadId={currentSquad.id}
-                  setSquads={setSquads}
-                />
-              ))}
-            </div>
-
-            {/* Next Meetup */}
-            <div style={{ ...card, padding: '18px 22px', marginBottom: 20 }}>
-              <h2 style={{ fontFamily: fonts.heading, fontSize: 18, fontWeight: 700, color: colors.text, margin: '0 0 14px' }}>
-                Next Game Night
-              </h2>
-              {currentSquad.nextMeetup ? (
-                <div style={{ marginBottom: 14 }}>
-                  <div style={{ fontFamily: fonts.body, fontSize: 15, color: colors.text, marginBottom: 6 }}>
-                    📅 {new Date(currentSquad.nextMeetup).toLocaleString('en-US', {
-                      weekday: 'long', month: 'long', day: 'numeric',
-                      hour: 'numeric', minute: '2-digit',
-                    })}
-                  </div>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                    <span style={{ fontFamily: fonts.body, fontSize: 13, color: colors.muted }}>Countdown: </span>
-                    <Countdown target={currentSquad.nextMeetup} />
+                  ) : (
+                    <p style={{ fontFamily: fonts.body, fontSize: 13, color: colors.muted, marginBottom: 14 }}>
+                      No game night scheduled yet.
+                    </p>
+                  )}
+                  <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                    <input
+                      type="datetime-local"
+                      value={meetupInput}
+                      onChange={e => setMeetupInput(e.target.value)}
+                      style={{ ...input.base, fontSize: 13, maxWidth: 260 }}
+                    />
+                    <button
+                      onClick={() => saveMeetup(currentSquad.id)}
+                      style={{ ...button.secondary, whiteSpace: 'nowrap' }}
+                    >
+                      {currentSquad.meetup_date ? 'Update' : 'Schedule'}
+                    </button>
                   </div>
                 </div>
-              ) : (
-                <p style={{ fontFamily: fonts.body, fontSize: 13, color: colors.muted, marginBottom: 14 }}>
-                  No game night scheduled yet.
-                </p>
-              )}
-              <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                <input
-                  type="datetime-local"
-                  value={meetupInput}
-                  onChange={e => setMeetupInput(e.target.value)}
-                  style={{ ...input.base, fontSize: 13, maxWidth: 260 }}
-                />
-                <button
-                  onClick={() => setMeetup(currentSquad.id)}
-                  style={{ ...button.secondary, whiteSpace: 'nowrap' }}
-                >
-                  {currentSquad.nextMeetup ? 'Update' : 'Schedule'}
-                </button>
-              </div>
-            </div>
 
-            {/* Threads */}
-            <div style={{ ...card, padding: '18px 22px' }}>
-              <h2 style={{ fontFamily: fonts.heading, fontSize: 18, fontWeight: 700, color: colors.text, margin: '0 0 14px' }}>
-                Threads
-              </h2>
-              <ThreadSection
-                squadId={currentSquad.id}
-                squads={squads}
-                setSquads={setSquads}
-                currentUser={currentUser}
-              />
-            </div>
+                {/* Threads */}
+                <div style={{ ...card, padding: '18px 22px' }}>
+                  <h2 style={{ fontFamily: fonts.heading, fontSize: 18, fontWeight: 700, color: colors.text, margin: '0 0 14px' }}>
+                    Threads
+                  </h2>
+                  <ThreadSection
+                    threads={threads}
+                    onCreateThread={createThread}
+                    onAddReply={addReply}
+                    currentUser={currentUser}
+                  />
+                </div>
+              </>
+            )}
           </div>
         )}
       </div>

@@ -26,11 +26,8 @@ export default function App() {
     const id = load('gg_selectedGameId', null);
     return id ? (getGameById(id) ?? null) : null;
   });
-  const [squads, setSquads] = useState(() => load('gg_squads', []));
-
   useEffect(() => { localStorage.setItem('gg_currentPage', JSON.stringify(currentPage)); }, [currentPage]);
   useEffect(() => { localStorage.setItem('gg_selectedGameId', JSON.stringify(selectedGame?.id ?? null)); }, [selectedGame]);
-  useEffect(() => { localStorage.setItem('gg_squads', JSON.stringify(squads)); }, [squads]);
 
   function navigateTo(page, game = null) {
     setCurrentPage(game ? 'game' : page);
@@ -55,7 +52,7 @@ export default function App() {
           <PlayerPage navigateTo={navigateTo} />
         )}
         {currentPage === 'squad' && (
-          <SquadPage squads={squads} setSquads={setSquads} navigateTo={navigateTo} />
+          <SquadPage navigateTo={navigateTo} />
         )}
       </main>
     </div>
