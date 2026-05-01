@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { colors, fonts, input } from '../styles/theme';
 import { games, curatedGames, genreSections } from '../data/games';
 import { grossingGames } from '../data/grossingGames';
-import GameCard, { avgRating } from '../components/GameCard';
+import GameCard from '../components/GameCard';
 
 const GENRE_ACCENT = {
   rpg: colors.navy,
@@ -11,19 +11,6 @@ const GENRE_ACCENT = {
   coop: '#1565C0',
 };
 
-function findTopRatedId(sectionGames, reviews) {
-  let best = null;
-  let bestAvg = -1;
-  sectionGames.forEach(g => {
-    const avg = avgRating(reviews[g.id]);
-    if (avg !== null && Number(avg) > bestAvg) {
-      bestAvg = Number(avg);
-      best = g.id;
-    }
-  });
-  return best;
-}
-
 // Resolve grossing game entries — use curated version if it exists (dedup)
 const curatedByTitle = {};
 curatedGames.forEach(g => { curatedByTitle[g.title.toLowerCase()] = g; });
@@ -31,11 +18,11 @@ const resolvedGrossing = grossingGames.map(
   g => curatedByTitle[g.title.toLowerCase()] || g
 );
 
-export default function Home({ reviews, navigateTo, currentUser, playerData }) {
+export default function Home({ navigateTo, currentUser }) {
   const [search, setSearch] = useState('');
   const [expandedGenres, setExpandedGenres] = useState({});
 
-  const userTop10 = (currentUser && playerData[currentUser]?.top10) || [];
+  const userTop10 = [];
 
   const filtered = search.trim()
     ? games.filter(g => g.title.toLowerCase().includes(search.trim().toLowerCase()))
@@ -139,7 +126,7 @@ export default function Home({ reviews, navigateTo, currentUser, playerData }) {
                 <GameCard
                   key={game.id}
                   game={game}
-                  reviews={reviews}
+
                   onClick={() => navigateTo('game', game)}
                   isTop10={userTop10.includes(game.id)}
                 />
@@ -153,7 +140,7 @@ export default function Home({ reviews, navigateTo, currentUser, playerData }) {
             const sectionGames = curatedGames.filter(g => g.genre === section.key);
             const accent = GENRE_ACCENT[section.key];
             const expanded = expandedGenres[section.key];
-            const topRatedId = findTopRatedId(sectionGames, reviews);
+            const topRatedId = null;
 
             return (
               <div key={section.key}>
@@ -206,7 +193,7 @@ export default function Home({ reviews, navigateTo, currentUser, playerData }) {
                       <GameCard
                         key={game.id}
                         game={game}
-                        reviews={reviews}
+      
                         onClick={() => navigateTo('game', game)}
                         isTop10={userTop10.includes(game.id)}
                         isTopRated={game.id === topRatedId}
@@ -226,7 +213,7 @@ export default function Home({ reviews, navigateTo, currentUser, playerData }) {
                       <GameCard
                         key={game.id}
                         game={game}
-                        reviews={reviews}
+      
                         onClick={() => navigateTo('game', game)}
                         isTop10={userTop10.includes(game.id)}
                         isTopRated={game.id === topRatedId}
@@ -285,7 +272,7 @@ export default function Home({ reviews, navigateTo, currentUser, playerData }) {
                 <GameCard
                   key={game.id}
                   game={game}
-                  reviews={reviews}
+
                   onClick={() => navigateTo('game', game)}
                   isTop10={userTop10.includes(game.id)}
                 />

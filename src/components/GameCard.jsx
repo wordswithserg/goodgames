@@ -37,7 +37,7 @@ const GENRE_COLORS = {
   moba:       { bg: '#ECFDF5', text: '#047857' },
 };
 
-export default function GameCard({ game, reviews, onClick, isTop10 = false, isTopRated = false }) {
+export default function GameCard({ game, reviews = {}, onClick, isTop10 = false, isTopRated = false }) {
   const reviewList = reviews[game.id] || [];
   const avg = avgRating(reviewList);
   const gc = GENRE_COLORS[game.genre] || { bg: '#EEE', text: '#555' };

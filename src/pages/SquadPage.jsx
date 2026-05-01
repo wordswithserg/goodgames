@@ -379,7 +379,7 @@ function ThreadSection({ squadId, squads, setSquads, currentUser }) {
   );
 }
 
-export default function SquadPage({ squads, setSquads, playerData }) {
+export default function SquadPage({ squads, setSquads }) {
   const { profile, loading, isLoggedIn } = useAuth();
   const currentUser = profile?.username || null;
   const [creating, setCreating] = useState(false);
@@ -423,24 +423,12 @@ export default function SquadPage({ squads, setSquads, playerData }) {
     setMeetupInput('');
   }
 
-  function getTopGames(squad) {
-    const counts = {};
-    squad.members.forEach(member => {
-      const data = playerData[member];
-      if (!data?.top10) return;
-      data.top10.forEach((id, idx) => {
-        const score = 10 - idx;
-        counts[id] = (counts[id] || 0) + score;
-      });
-    });
-    return Object.entries(counts)
-      .sort((a, b) => b[1] - a[1])
-      .slice(0, 5)
-      .map(([id, score]) => ({ game: getGameById(id), score }))
-      .filter(x => x.game);
+  // Squad top games aggregation is pending Supabase migration for cross-user top10 lookup.
+  function getTopGames(_squad) {
+    return [];
   }
 
-  console.log('[SquadPage]', { loading, isLoggedIn, profile, currentUser });
+
 
   if (loading) return null;
   if (!isLoggedIn) return <RequireAuth message="Log in to view your squads." />;

@@ -1,23 +1,19 @@
 import { useState, useEffect, useRef } from 'react';
 import { colors, fonts, card, button, input } from '../styles/theme';
 import { games, gamesByGenre } from '../data/games';
-import { GENRE_COLORS } from '../components/GameCard';
+import { GENRE_COLORS, StarDisplay } from '../components/GameCard';
 import { useAuth } from '../contexts/AuthContext';
+import { supabase } from '../lib/supabase';
 import RequireAuth from '../components/auth/RequireAuth';
 
-function computeCompleteness(userData) {
-  if (!userData) return 0;
+function computeCompleteness({ top10, wishlist, genreFavs, aboutAnswers }) {
   let score = 0;
-  // Top 10: 4 points per game, max 40
-  score += Math.min((userData.top10?.length || 0) * 4, 40);
-  // Genre favorites: 5 points each × 4 genres, max 20
-  const favs = Object.values(userData.genreFavorites || {}).filter(Boolean);
+  score += Math.min((top10?.length || 0) * 4, 40);
+  const favs = Object.values(genreFavs || {}).filter(Boolean);
   score += Math.min(favs.length * 5, 20);
-  // About me: 10 points per answered question, max 30
-  const answered = (userData.aboutAnswers || []).filter(qa => qa.answer?.trim()).length;
+  const answered = (aboutAnswers || []).filter(qa => qa.answer?.trim()).length;
   score += Math.min(answered * 10, 30);
-  // Wishlist: 10 points if ≥1 game
-  if ((userData.wishlist?.length || 0) > 0) score += 10;
+  if ((wishlist?.length || 0) > 0) score += 10;
   return Math.min(score, 100);
 }
 
@@ -119,90 +115,145 @@ function GameSearch({ onSelect, exclude = [], placeholder = 'Search games…' })
   );
 }
 
-export default function PlayerPage({ playerData, setPlayerData }) {
-  const { profile, signOut, loading, isLoggedIn } = useAuth();
+export default function PlayerPage({ navigateTo }) {
+  const { user, profile, signOut, loading, isLoggedIn } = useAuth();
   const currentUser = profile?.username || null;
   const [editMode, setEditMode] = useState(false);
 
-  // Initialize an empty profile entry the first time a Supabase user lands here.
-  useEffect(() => {
-    if (!currentUser) return;
-    setPlayerData(pd => {
-      if (pd[currentUser]) return pd;
-      return {
-        ...pd,
-        [currentUser]: {
-          top10: [], genreFavorites: {}, wishlist: [],
-          aboutAnswers: [
-            { question: ABOUT_QUESTIONS[0], answer: '' },
-            { question: ABOUT_QUESTIONS[1], answer: '' },
-            { question: ABOUT_QUESTIONS[2], answer: '' },
-          ],
-        },
-      };
-    });
-  }, [currentUser]); // eslint-disable-line react-hooks/exhaustive-deps
+  const [top10, setTop10] = useState([]);
+  const [wishlist, setWishlist] = useState([]);
+  const [myReviews, setMyReviews] = useState([]);
+  const [dataLoading, setDataLoading] = useState(true);
 
-  const userData = currentUser ? (playerData[currentUser] || {}) : null;
-  const top10 = userData?.top10 || [];
-  const genreFavs = userData?.genreFavorites || {};
-  const completeness = computeCompleteness(userData);
-  const aboutAnswers = userData?.aboutAnswers || [
+  const [genreFavs, setGenreFavs] = useState({});
+  const [aboutAnswers, setAboutAnswers] = useState([
     { question: ABOUT_QUESTIONS[0], answer: '' },
     { question: ABOUT_QUESTIONS[1], answer: '' },
     { question: ABOUT_QUESTIONS[2], answer: '' },
-  ];
-  const wishlist = userData?.wishlist || [];
+  ]);
 
-  function updateUserData(updates) {
-    setPlayerData(pd => ({
-      ...pd,
-      [currentUser]: { ...(pd[currentUser] || {}), ...updates },
-    }));
+  // Fetch top10 and wishlist from Supabase
+  useEffect(() => {
+    if (!user?.id) { setDataLoading(false); return; }
+    let cancelled = false;
+    setDataLoading(true);
+    async function fetchData() {
+      const [top10Result, wishlistResult, reviewsResult] = await Promise.all([
+        supabase
+          .from('top10')
+          .select('game_id, rank')
+          .eq('user_id', user.id)
+          .order('rank', { ascending: true }),
+        supabase
+          .from('wishlist')
+          .select('game_id')
+          .eq('user_id', user.id),
+        supabase
+          .from('reviews')
+          .select('id, game_id, rating, body, created_at')
+          .eq('user_id', user.id)
+          .order('created_at', { ascending: false }),
+      ]);
+      if (cancelled) return;
+      if (!top10Result.error) setTop10((top10Result.data || []).map(r => r.game_id));
+      if (!wishlistResult.error) setWishlist((wishlistResult.data || []).map(r => r.game_id));
+      if (!reviewsResult.error) setMyReviews(reviewsResult.data || []);
+      setDataLoading(false);
+    }
+    fetchData();
+    return () => { cancelled = true; };
+  }, [user?.id]);
+
+  // Load localStorage-backed data (genreFavs, aboutAnswers)
+  useEffect(() => {
+    if (!currentUser) return;
+    const key = `gg_playerData_${currentUser}`;
+    try {
+      const stored = JSON.parse(localStorage.getItem(key) || '{}');
+      if (stored.genreFavorites) setGenreFavs(stored.genreFavorites);
+      if (stored.aboutAnswers) setAboutAnswers(stored.aboutAnswers);
+    } catch {}
+  }, [currentUser]);
+
+  function saveLocalData(updates) {
+    if (!currentUser) return;
+    const key = `gg_playerData_${currentUser}`;
+    try {
+      const stored = JSON.parse(localStorage.getItem(key) || '{}');
+      localStorage.setItem(key, JSON.stringify({ ...stored, ...updates }));
+    } catch {}
   }
 
-  function addToTop10(game) {
+  async function addToTop10(game) {
     if (top10.length >= 10 || top10.includes(game.id)) return;
-    updateUserData({ top10: [...top10, game.id] });
+    const newRank = top10.length + 1;
+    const optimistic = [...top10, game.id];
+    setTop10(optimistic);
+    const { error } = await supabase
+      .from('top10')
+      .insert({ user_id: user.id, game_id: game.id, rank: newRank });
+    if (error) {
+      console.error('addToTop10 error:', error);
+      setTop10(top10);
+    }
   }
 
-  function removeFromTop10(id) {
-    updateUserData({ top10: top10.filter(x => x !== id) });
+  async function removeFromTop10(gameId) {
+    const next = top10.filter(id => id !== gameId);
+    setTop10(next);
+    await supabase.from('top10').delete().eq('user_id', user.id).eq('game_id', gameId);
+    if (next.length > 0) {
+      const rows = next.map((id, i) => ({ user_id: user.id, game_id: id, rank: i + 1 }));
+      await supabase.from('top10').upsert(rows, { onConflict: 'user_id,game_id' });
+    }
   }
 
-  function moveUp(idx) {
+  async function moveUp(idx) {
     if (idx === 0) return;
     const next = [...top10];
     [next[idx - 1], next[idx]] = [next[idx], next[idx - 1]];
-    updateUserData({ top10: next });
+    setTop10(next);
+    const rows = [
+      { user_id: user.id, game_id: next[idx - 1], rank: idx },
+      { user_id: user.id, game_id: next[idx], rank: idx + 1 },
+    ];
+    await supabase.from('top10').upsert(rows, { onConflict: 'user_id,game_id' });
   }
 
-  function moveDown(idx) {
+  async function moveDown(idx) {
     if (idx === top10.length - 1) return;
     const next = [...top10];
     [next[idx], next[idx + 1]] = [next[idx + 1], next[idx]];
-    updateUserData({ top10: next });
+    setTop10(next);
+    const rows = [
+      { user_id: user.id, game_id: next[idx], rank: idx + 1 },
+      { user_id: user.id, game_id: next[idx + 1], rank: idx + 2 },
+    ];
+    await supabase.from('top10').upsert(rows, { onConflict: 'user_id,game_id' });
   }
 
   function setGenreFav(genre, gameId) {
-    updateUserData({ genreFavorites: { ...genreFavs, [genre]: gameId } });
+    const next = { ...genreFavs, [genre]: gameId || null };
+    setGenreFavs(next);
+    saveLocalData({ genreFavorites: next });
   }
 
   function setAboutAnswer(idx, field, value) {
     const next = [...aboutAnswers];
     next[idx] = { ...next[idx], [field]: value };
-    updateUserData({ aboutAnswers: next });
+    setAboutAnswers(next);
+    saveLocalData({ aboutAnswers: next });
   }
 
   function getGameById(id) {
     return games.find(g => g.id === id);
   }
 
-  console.log('[PlayerPage]', { loading, isLoggedIn, profile, currentUser });
+  const completeness = computeCompleteness({ top10, wishlist, genreFavs, aboutAnswers });
 
-  if (loading) return null;
+  if (loading || dataLoading) return null;
   if (!isLoggedIn) return <RequireAuth message="Log in to view your profile." />;
-  if (!currentUser) return null; // logged in but profile still resolving
+  if (!currentUser) return null;
 
   return (
     <div style={{ maxWidth: 760, margin: '0 auto', padding: '32px 24px' }}>
@@ -385,6 +436,86 @@ export default function PlayerPage({ playerData, setPlayerData }) {
           <p style={{ fontFamily: fonts.body, fontSize: 13, color: colors.muted, marginTop: 10 }}>
             Top 10 is full. Remove a game to add another.
           </p>
+        )}
+      </div>
+
+      {/* My Reviews */}
+      <div style={{ ...card, padding: '20px 24px', marginBottom: 20 }}>
+        <SectionHeader>My Reviews</SectionHeader>
+        {myReviews.length === 0 ? (
+          <p style={{ fontFamily: fonts.body, fontSize: 14, color: colors.muted }}>
+            No reviews yet. Head to a game page to write one.
+          </p>
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+            {myReviews.map(review => {
+              const game = getGameById(review.game_id);
+              if (!game) return null;
+              const gc = GENRE_COLORS[game.genre] || { bg: '#EEE', text: '#555' };
+              return (
+                <div
+                  key={review.id}
+                  onClick={() => navigateTo('game', game)}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'flex-start',
+                    gap: 12,
+                    padding: '12px 14px',
+                    background: colors.lightBg,
+                    border: `1px solid ${colors.border}`,
+                    borderRadius: 8,
+                    cursor: 'pointer',
+                    transition: 'border-color 0.15s',
+                  }}
+                  onMouseEnter={e => e.currentTarget.style.borderColor = colors.navy}
+                  onMouseLeave={e => e.currentTarget.style.borderColor = colors.border}
+                >
+                  <div style={{
+                    width: 36,
+                    height: 36,
+                    borderRadius: 6,
+                    background: game.coverColor,
+                    flexShrink: 0,
+                  }} />
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4, flexWrap: 'wrap' }}>
+                      <span style={{ fontFamily: fonts.body, fontWeight: 600, fontSize: 14, color: colors.text }}>
+                        {game.title}
+                      </span>
+                      <span style={{
+                        background: gc.bg, color: gc.text,
+                        fontSize: 10, fontWeight: 700, padding: '1px 6px', borderRadius: 8,
+                        textTransform: 'uppercase', letterSpacing: '0.4px', fontFamily: fonts.body,
+                      }}>
+                        {game.genreLabel}
+                      </span>
+                      <span style={{ marginLeft: 'auto', fontFamily: fonts.body, fontSize: 11, color: colors.muted }}>
+                        {new Date(review.created_at).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' })}
+                      </span>
+                    </div>
+                    <div style={{ marginBottom: review.body ? 6 : 0 }}>
+                      <StarDisplay rating={review.rating} size={13} />
+                    </div>
+                    {review.body && (
+                      <p style={{
+                        fontFamily: fonts.body,
+                        fontSize: 13,
+                        color: colors.text,
+                        margin: 0,
+                        lineHeight: 1.5,
+                        overflow: 'hidden',
+                        display: '-webkit-box',
+                        WebkitLineClamp: 2,
+                        WebkitBoxOrient: 'vertical',
+                      }}>
+                        {review.body}
+                      </p>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
         )}
       </div>
 

@@ -1,7 +1,8 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { colors, fonts, card, button, input } from '../styles/theme';
 import { avgRating, StarDisplay, GENRE_COLORS } from '../components/GameCard';
 import { useAuth } from '../contexts/AuthContext';
+import { supabase } from '../lib/supabase';
 
 const PLATFORM_ICONS = {
   'PC': '🖥', 'PS4': '🎮', 'PS5': '🎮', 'PS3': '🎮',
@@ -119,31 +120,34 @@ function LoginPrompt({ navigateTo, action }) {
   );
 }
 
-function ReviewCard({ review, gameId, reviewVotes, setReviewVotes }) {
-  const key = `${review.author}__${review.date}__${review.rating}`;
-  const voteData = reviewVotes[gameId]?.[key] || { up: 0, down: 0, mine: null };
+// voteData: { up, down, mine }  onVote(reviewId, dir): handled by parent
+function ReviewCard({ review, voteData = { up: 0, down: 0, mine: null }, onVote, isAuthor, onEdit }) {
+  const [isEditing, setIsEditing] = useState(false);
+  const [editRating, setEditRating] = useState(review.rating);
+  const [editBody, setEditBody] = useState(review.body || '');
+  const [showOriginal, setShowOriginal] = useState(false);
 
-  function vote(dir) {
-    setReviewVotes(rv => {
-      const gameVotes = rv[gameId] || {};
-      const cur = gameVotes[key] || { up: 0, down: 0, mine: null };
-      let next = { ...cur };
-      if (cur.mine === dir) {
-        // undo vote
-        next[dir] = Math.max(0, next[dir] - 1);
-        next.mine = null;
-      } else {
-        // switch or new vote
-        if (cur.mine) next[cur.mine] = Math.max(0, next[cur.mine] - 1);
-        next[dir] = next[dir] + 1;
-        next.mine = dir;
-      }
-      return { ...rv, [gameId]: { ...gameVotes, [key]: next } };
-    });
+  const isEdited = !!review.edited_at;
+  const displayRating = showOriginal ? review.original_rating : review.rating;
+  const displayBody = showOriginal ? review.original_body : review.body;
+
+  function vote(dir) { if (onVote) onVote(review.id, dir); }
+
+  function startEdit() {
+    setEditRating(review.rating);
+    setEditBody(review.body || '');
+    setIsEditing(true);
+  }
+
+  function saveEdit() {
+    if (!editRating) return;
+    if (onEdit) onEdit(review.id, editRating, editBody);
+    setIsEditing(false);
   }
 
   return (
     <div style={{ ...card, padding: '16px 20px', marginBottom: 12 }}>
+      {/* Header */}
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
           <div style={{
@@ -166,53 +170,110 @@ function ReviewCard({ review, gameId, reviewVotes, setReviewVotes }) {
             <div style={{ fontFamily: fonts.body, fontWeight: 600, fontSize: 14, color: colors.text }}>
               {review.author}
             </div>
-            <div style={{ fontFamily: fonts.body, fontSize: 12, color: colors.muted }}>
-              {review.date}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              <span style={{ fontFamily: fonts.body, fontSize: 12, color: colors.muted }}>
+                {review.date}
+              </span>
+              {isEdited && !isEditing && (
+                <span style={{ fontFamily: fonts.body, fontSize: 11, color: colors.muted, fontStyle: 'italic' }}>
+                  · edited
+                </span>
+              )}
             </div>
           </div>
         </div>
-        <StarDisplay rating={review.rating} size={15} />
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          {isAuthor && !isEditing && (
+            <button
+              onClick={startEdit}
+              style={{ ...button.ghost, padding: '3px 10px', fontSize: 12 }}
+            >
+              Edit
+            </button>
+          )}
+          {!isEditing && <StarDisplay rating={displayRating} size={15} />}
+        </div>
       </div>
 
-      {review.body && (
-        <p style={{
-          fontFamily: fonts.body,
-          fontSize: 14,
-          color: colors.text,
-          margin: '0 0 12px',
-          lineHeight: 1.65,
-        }}>
-          {review.body}
-        </p>
+      {isEditing ? (
+        <div>
+          <div style={{ marginBottom: 10 }}>
+            <StarPicker value={editRating} onChange={setEditRating} />
+          </div>
+          <textarea
+            value={editBody}
+            onChange={e => setEditBody(e.target.value)}
+            rows={3}
+            style={{ ...input.base, resize: 'vertical', fontFamily: fonts.body, fontSize: 14, lineHeight: 1.5, marginBottom: 10 }}
+          />
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button onClick={saveEdit} style={button.primary}>Save</button>
+            <button onClick={() => setIsEditing(false)} style={button.ghost}>Cancel</button>
+          </div>
+        </div>
+      ) : (
+        <>
+          {displayBody && (
+            <p style={{
+              fontFamily: fonts.body,
+              fontSize: 14,
+              color: showOriginal ? colors.muted : colors.text,
+              margin: '0 0 10px',
+              lineHeight: 1.65,
+              fontStyle: showOriginal ? 'italic' : 'normal',
+            }}>
+              {displayBody}
+            </p>
+          )}
+
+          {isEdited && (
+            <button
+              onClick={() => setShowOriginal(s => !s)}
+              style={{
+                background: 'none',
+                border: 'none',
+                cursor: 'pointer',
+                fontFamily: fonts.body,
+                fontSize: 12,
+                color: colors.muted,
+                padding: 0,
+                marginBottom: 10,
+                textDecoration: 'underline',
+              }}
+            >
+              {showOriginal ? 'View current version' : 'View original'}
+            </button>
+          )}
+
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button
+              onClick={() => vote('up')}
+              style={{
+                ...button.ghost,
+                padding: '4px 11px',
+                fontSize: 12,
+                background: voteData.mine === 'up' ? colors.navy : 'transparent',
+                color: voteData.mine === 'up' ? colors.white : colors.navy,
+              }}
+            >
+              👍{voteData.up > 0 ? ` ${voteData.up}` : ''}
+            </button>
+            <button
+              onClick={() => vote('down')}
+              style={{
+                ...button.ghost,
+                padding: '4px 11px',
+                fontSize: 12,
+                background: voteData.mine === 'down' ? '#C0392B' : 'transparent',
+                color: voteData.mine === 'down' ? colors.white : colors.navy,
+                borderColor: voteData.mine === 'down' ? '#C0392B' : colors.navy,
+              }}
+            >
+              👎{voteData.down > 0 ? ` ${voteData.down}` : ''}
+            </button>
+          </div>
+        </>
       )}
-
-      <div style={{ display: 'flex', gap: 8 }}>
-        <button
-          onClick={() => vote('up')}
-          style={{
-            ...button.ghost,
-            padding: '4px 11px',
-            fontSize: 12,
-            background: voteData.mine === 'up' ? colors.navy : 'transparent',
-            color: voteData.mine === 'up' ? colors.white : colors.navy,
-          }}
-        >
-          👍{voteData.up > 0 ? ` ${voteData.up}` : ''}
-        </button>
-        <button
-          onClick={() => vote('down')}
-          style={{
-            ...button.ghost,
-            padding: '4px 11px',
-            fontSize: 12,
-            background: voteData.mine === 'down' ? '#C0392B' : 'transparent',
-            color: voteData.mine === 'down' ? colors.white : colors.navy,
-            borderColor: voteData.mine === 'down' ? '#C0392B' : colors.navy,
-          }}
-        >
-          👎{voteData.down > 0 ? ` ${voteData.down}` : ''}
-        </button>
-      </div>
     </div>
   );
 }
@@ -223,63 +284,221 @@ const SORT_OPTIONS = [
   { value: 'lowest', label: 'Lowest Rated' },
 ];
 
-export default function GamePage({
-  game, reviews, setReviews,
-  playerData, setPlayerData, reviewVotes, setReviewVotes, navigateTo,
-}) {
-  const { profile } = useAuth();
+export default function GamePage({ game, navigateTo }) {
+  const { user, profile, isLoggedIn } = useAuth();
   const currentUser = profile?.username || null;
+
+  const [reviewList, setReviewList] = useState([]);
+  const [reviewsLoading, setReviewsLoading] = useState(true);
+  const [isWishlisted, setIsWishlisted] = useState(false);
+  const [isInTop10, setIsInTop10] = useState(false);
+  // votes: { [reviewId]: { up, down, mine } }
+  const [votes, setVotes] = useState({});
+
   const [rating, setRating] = useState(0);
   const [body, setBody] = useState('');
   const [submitted, setSubmitted] = useState(false);
   const [ratingError, setRatingError] = useState(false);
   const [sort, setSort] = useState('newest');
 
-  const reviewList = reviews[game.id] || [];
+  // Fetch reviews for this game. Two queries: reviews then usernames.
+  useEffect(() => {
+    let cancelled = false;
+    async function fetchReviews() {
+      setReviewsLoading(true);
+      const { data: rawReviews, error } = await supabase
+        .from('reviews')
+        .select('id, rating, body, created_at, user_id')
+        .eq('game_id', game.id)
+        .order('created_at', { ascending: false });
+
+      if (cancelled) return;
+      if (error) { console.error('[GamePage] fetch reviews:', error); setReviewsLoading(false); return; }
+      if (!rawReviews || rawReviews.length === 0) { setReviewList([]); setReviewsLoading(false); return; }
+
+      const userIds = [...new Set(rawReviews.map(r => r.user_id))];
+      const { data: profiles } = await supabase
+        .from('profiles')
+        .select('id, username')
+        .in('id', userIds);
+
+      if (cancelled) return;
+      const usernameMap = {};
+      (profiles || []).forEach(p => { usernameMap[p.id] = p.username; });
+
+      setReviewList(rawReviews.map(r => ({
+        id: r.id,
+        author: usernameMap[r.user_id] || 'unknown',
+        rating: r.rating,
+        body: r.body,
+        date: new Date(r.created_at).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' }),
+        edited_at: null,
+        original_rating: null,
+        original_body: null,
+      })));
+      setReviewsLoading(false);
+    }
+    fetchReviews();
+    return () => { cancelled = true; };
+  }, [game.id]);
+
+  // Fetch vote counts for all reviews of this game once reviews are loaded.
+  useEffect(() => {
+    if (reviewList.length === 0) { setVotes({}); return; }
+    let cancelled = false;
+    async function fetchVotes() {
+      const ids = reviewList.map(r => r.id);
+      const { data } = await supabase
+        .from('review_votes')
+        .select('review_id, user_id, vote')
+        .in('review_id', ids);
+
+      if (cancelled) return;
+      const map = {};
+      ids.forEach(id => { map[id] = { up: 0, down: 0, mine: null }; });
+      (data || []).forEach(v => {
+        if (!map[v.review_id]) return;
+        if (v.vote === 'up') map[v.review_id].up++;
+        if (v.vote === 'down') map[v.review_id].down++;
+        if (user && v.user_id === user.id) map[v.review_id].mine = v.vote;
+      });
+      setVotes(map);
+    }
+    fetchVotes();
+    return () => { cancelled = true; };
+  }, [reviewList, user?.id]);
+
+  // Fetch wishlist status for this game.
+  useEffect(() => {
+    if (!user) { setIsWishlisted(false); return; }
+    let cancelled = false;
+    supabase.from('wishlist').select('game_id').eq('user_id', user.id).eq('game_id', game.id).maybeSingle()
+      .then(({ data }) => { if (!cancelled) setIsWishlisted(!!data); });
+    return () => { cancelled = true; };
+  }, [user?.id, game.id]);
+
+  // Fetch whether this game is in the user's top 10 (for badge).
+  useEffect(() => {
+    if (!user) { setIsInTop10(false); return; }
+    let cancelled = false;
+    supabase.from('top10').select('game_id').eq('user_id', user.id).eq('game_id', game.id).maybeSingle()
+      .then(({ data }) => { if (!cancelled) setIsInTop10(!!data); });
+    return () => { cancelled = true; };
+  }, [user?.id, game.id]);
+
   const avg = avgRating(reviewList);
   const gc = GENRE_COLORS[game.genre] || { bg: '#EEE', text: '#555' };
-
-  const userData = currentUser ? (playerData[currentUser] || {}) : {};
-  const wishlist = userData.wishlist || [];
-  const isWishlisted = wishlist.includes(game.id);
 
   const sortedReviews = [...reviewList].sort((a, b) => {
     if (sort === 'highest') return b.rating - a.rating;
     if (sort === 'lowest') return a.rating - b.rating;
-    return 0; // newest = already newest-first from submission order
+    return 0;
   });
 
-  const userTop10 = currentUser ? (playerData[currentUser]?.top10 || []) : [];
-  const isInTop10 = userTop10.includes(game.id);
-
-  function toggleWishlist() {
-    setPlayerData(pd => {
-      const user = pd[currentUser] || {};
-      const wl = user.wishlist || [];
-      return {
-        ...pd,
-        [currentUser]: {
-          ...user,
-          wishlist: isWishlisted ? wl.filter(id => id !== game.id) : [...wl, game.id],
-        },
-      };
-    });
+  async function toggleWishlist() {
+    if (!isLoggedIn) { navigateTo('player'); return; }
+    const prev = isWishlisted;
+    setIsWishlisted(!prev);
+    if (prev) {
+      const { error } = await supabase.from('wishlist').delete()
+        .eq('user_id', user.id).eq('game_id', game.id);
+      if (error) { setIsWishlisted(prev); console.error('[GamePage] wishlist delete:', error); }
+    } else {
+      const { error } = await supabase.from('wishlist').insert({ user_id: user.id, game_id: game.id });
+      if (error) { setIsWishlisted(prev); console.error('[GamePage] wishlist insert:', error); }
+    }
   }
 
-  function submitReview() {
+  async function submitReview() {
     if (!rating) { setRatingError(true); return; }
     setRatingError(false);
-    const review = {
+    const { data, error } = await supabase
+      .from('reviews')
+      .insert({ user_id: user.id, game_id: game.id, rating, body: body.trim() })
+      .select('id, rating, body, created_at')
+      .single();
+    if (error) { console.error('[GamePage] submit review:', error); return; }
+    setReviewList(prev => [{
+      id: data.id,
       author: currentUser,
-      rating,
-      body: body.trim(),
-      date: new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' }),
-    };
-    setReviews(r => ({ ...r, [game.id]: [review, ...(r[game.id] || [])] }));
+      rating: data.rating,
+      body: data.body,
+      date: new Date(data.created_at).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' }),
+      edited_at: null,
+      original_rating: null,
+      original_body: null,
+    }, ...prev]);
     setRating(0);
     setBody('');
     setSubmitted(true);
     setTimeout(() => setSubmitted(false), 3000);
+  }
+
+  async function handleEdit(reviewId, newRating, newBody) {
+    const review = reviewList.find(r => r.id === reviewId);
+    if (!review) return;
+    const trimmedBody = newBody.trim();
+    const editedAt = new Date().toISOString();
+    // Preserve the very first original across multiple edits.
+    const originalRating = review.original_rating ?? review.rating;
+    const originalBody = review.original_body !== null ? review.original_body : (review.body ?? null);
+
+    const { error } = await supabase
+      .from('reviews')
+      .update({ rating: newRating, body: trimmedBody, original_rating: originalRating, original_body: originalBody, edited_at: editedAt })
+      .eq('id', reviewId)
+      .eq('user_id', user.id);
+
+    if (error) { console.error('[GamePage] edit review:', error); return; }
+    setReviewList(prev => prev.map(r => r.id === reviewId ? {
+      ...r,
+      rating: newRating,
+      body: trimmedBody,
+      edited_at: editedAt,
+      original_rating: originalRating,
+      original_body: originalBody,
+    } : r));
+  }
+
+  // Optimistic vote: update local state immediately, then persist to Supabase.
+  async function handleVote(reviewId, dir) {
+    if (!isLoggedIn) return;
+    const current = votes[reviewId] || { up: 0, down: 0, mine: null };
+    const next = { ...current };
+    if (current.mine === dir) {
+      next[dir] = Math.max(0, next[dir] - 1);
+      next.mine = null;
+    } else {
+      if (current.mine) next[current.mine] = Math.max(0, next[current.mine] - 1);
+      next[dir] = next[dir] + 1;
+      next.mine = dir;
+    }
+    setVotes(v => ({ ...v, [reviewId]: next }));
+
+    console.log('[handleVote] payload', { user_id: user?.id, review_id: reviewId, vote: dir, toggling_off: current.mine === dir });
+
+    if (current.mine === dir) {
+      const { error } = await supabase.from('review_votes').delete()
+        .eq('user_id', user.id).eq('review_id', reviewId);
+      if (error) {
+        console.error('[handleVote] delete error', { message: error.message, code: error.code, details: error.details, hint: error.hint });
+        setVotes(v => ({ ...v, [reviewId]: current }));
+      } else {
+        console.log('[handleVote] delete ok');
+      }
+    } else {
+      const row = { user_id: user.id, review_id: reviewId, vote: dir };
+      console.log('[handleVote] upserting row', row);
+      const { data, error } = await supabase.from('review_votes')
+        .upsert(row, { onConflict: 'user_id,review_id' })
+        .select();
+      if (error) {
+        console.error('[handleVote] upsert error', { message: error.message, code: error.code, details: error.details, hint: error.hint });
+        setVotes(v => ({ ...v, [reviewId]: current }));
+      } else {
+        console.log('[handleVote] upsert ok, returned', data);
+      }
+    }
   }
 
   return (
@@ -350,7 +569,7 @@ export default function GamePage({
             }}>
               {game.title}
             </h1>
-            {currentUser ? (
+            {isLoggedIn ? (
               <button
                 onClick={toggleWishlist}
                 style={{
@@ -451,7 +670,7 @@ export default function GamePage({
           Write a Review
         </h2>
 
-        {!currentUser ? (
+        {!isLoggedIn ? (
           <LoginPrompt navigateTo={navigateTo} action="write a review" />
         ) : (
           <div>
@@ -532,20 +751,25 @@ export default function GamePage({
           )}
         </div>
 
-        {reviewList.length === 0 ? (
+        {reviewsLoading ? (
           <div style={{ ...card, padding: 32, textAlign: 'center', color: colors.muted, fontFamily: fonts.body, fontSize: 14 }}>
-            {currentUser
+            Loading reviews…
+          </div>
+        ) : reviewList.length === 0 ? (
+          <div style={{ ...card, padding: 32, textAlign: 'center', color: colors.muted, fontFamily: fonts.body, fontSize: 14 }}>
+            {isLoggedIn
               ? 'No reviews yet. Be the first to share your thoughts!'
               : 'No reviews yet.'}
           </div>
         ) : (
-          sortedReviews.map((review, i) => (
+          sortedReviews.map(review => (
             <ReviewCard
-              key={i}
+              key={review.id}
               review={review}
-              gameId={game.id}
-              reviewVotes={reviewVotes}
-              setReviewVotes={setReviewVotes}
+              voteData={votes[review.id] || { up: 0, down: 0, mine: null }}
+              onVote={isLoggedIn ? handleVote : undefined}
+              isAuthor={review.author === currentUser}
+              onEdit={isLoggedIn ? handleEdit : undefined}
             />
           ))
         )}
