@@ -48,7 +48,6 @@ export default function NavAuth({ onNavigateToProfile, onNavigateToSettings }) {
               <div style={styles.dropdownUsername}>@{profile?.username || 'loading...'}</div>
               <div style={styles.dropdownEmail}>{user.email}</div>
             </div>
-            <button style={styles.dropdownItem} onClick={() => { setShowDropdown(false); onNavigateToProfile?.() }}>My Profile</button>
             <button style={styles.dropdownItem} onClick={() => { setShowDropdown(false); onNavigateToSettings?.() }}>Settings</button>
             <button style={styles.logoutItem} onClick={async () => { setShowDropdown(false); await signOut() }}>Log Out</button>
           </div>
