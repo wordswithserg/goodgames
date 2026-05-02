@@ -3,6 +3,7 @@ import { colors, fonts, card, button, input } from '../styles/theme';
 import { avgRating, StarDisplay, GENRE_COLORS } from '../components/GameCard';
 import { useAuth } from '../contexts/AuthContext';
 import { supabase } from '../lib/supabase';
+import { getGameById as getIgdbGame } from '../lib/igdb';
 
 const PLATFORM_ICONS = {
   'PC': '🖥', 'PS4': '🎮', 'PS5': '🎮', 'PS3': '🎮',
@@ -288,6 +289,17 @@ export default function GamePage({ game, navigateTo }) {
   const { user, profile, isLoggedIn } = useAuth();
   const currentUser = profile?.username || null;
 
+  const isIgdb = String(game.id).startsWith('igdb_');
+  const [igdbDetails, setIgdbDetails] = useState(null);
+
+  useEffect(() => {
+    if (!isIgdb) return;
+    getIgdbGame(game.id).then(details => { if (details) setIgdbDetails(details); });
+  }, [game.id, isIgdb]);
+
+  // Use fetched IGDB details when available; fall back to the game prop.
+  const g = igdbDetails || game;
+
   const [reviewList, setReviewList] = useState([]);
   const [reviewsLoading, setReviewsLoading] = useState(true);
   const [isWishlisted, setIsWishlisted] = useState(false);
@@ -387,7 +399,7 @@ export default function GamePage({ game, navigateTo }) {
   }, [user?.id, game.id]);
 
   const avg = avgRating(reviewList);
-  const gc = GENRE_COLORS[game.genre] || { bg: '#EEE', text: '#555' };
+  const gc = GENRE_COLORS[g.genre] || { bg: '#EEE', text: '#555' };
 
   const sortedReviews = [...reviewList].sort((a, b) => {
     if (sort === 'highest') return b.rating - a.rating;
@@ -516,26 +528,35 @@ export default function GamePage({ game, navigateTo }) {
           width: 120,
           height: 160,
           borderRadius: 10,
-          background: game.coverColor,
+          background: g.coverColor || colors.navy,
           flexShrink: 0,
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'center',
           boxShadow: '0 4px 16px rgba(0,0,0,0.15)',
           position: 'relative',
+          overflow: 'hidden',
         }}>
-          <span style={{
-            fontFamily: fonts.heading,
-            fontSize: 11,
-            color: 'rgba(255,255,255,0.9)',
-            textAlign: 'center',
-            padding: '0 10px',
-            lineHeight: 1.4,
-            fontWeight: 700,
-            textShadow: '0 1px 3px rgba(0,0,0,0.4)',
-          }}>
-            {game.title}
-          </span>
+          {g.coverUrl ? (
+            <img
+              src={g.coverUrl}
+              alt={g.title}
+              style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover' }}
+            />
+          ) : (
+            <span style={{
+              fontFamily: fonts.heading,
+              fontSize: 11,
+              color: 'rgba(255,255,255,0.9)',
+              textAlign: 'center',
+              padding: '0 10px',
+              lineHeight: 1.4,
+              fontWeight: 700,
+              textShadow: '0 1px 3px rgba(0,0,0,0.4)',
+            }}>
+              {g.title}
+            </span>
+          )}
           {isInTop10 && (
             <div style={{
               position: 'absolute',
@@ -560,14 +581,13 @@ export default function GamePage({ game, navigateTo }) {
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12, marginBottom: 8 }}>
             <h1 style={{
-              fontFamily: fonts.heading,
-              fontSize: 30,
-              fontWeight: 700,
+              fontFamily: fonts.pixel,
+              fontSize: 13,
               color: colors.text,
               margin: 0,
-              lineHeight: 1.2,
+              lineHeight: 1.7,
             }}>
-              {game.title}
+              {g.title}
             </h1>
             {isLoggedIn ? (
               <button
@@ -612,10 +632,10 @@ export default function GamePage({ game, navigateTo }) {
               textTransform: 'uppercase',
               letterSpacing: '0.5px',
             }}>
-              {game.genreLabel}
+              {g.genreLabel}
             </span>
             <span style={{ fontFamily: fonts.body, fontSize: 14, color: colors.muted }}>
-              {game.year}
+              {g.year}
             </span>
           </div>
 
@@ -642,11 +662,11 @@ export default function GamePage({ game, navigateTo }) {
             lineHeight: 1.7,
             margin: '0 0 14px',
           }}>
-            {game.description}
+            {g.description || g.summary}
           </p>
 
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-            {game.platforms.map(p => <PlatformBadge key={p} platform={p} />)}
+            {(g.platforms || []).map(p => <PlatformBadge key={p} platform={p} />)}
           </div>
         </div>
       </div>
@@ -661,9 +681,8 @@ export default function GamePage({ game, navigateTo }) {
       {/* Review form */}
       <div style={{ ...card, padding: '20px 24px', marginBottom: 24 }}>
         <h2 style={{
-          fontFamily: fonts.heading,
-          fontSize: 18,
-          fontWeight: 700,
+          fontFamily: fonts.pixel,
+          fontSize: 10,
           color: colors.text,
           margin: '0 0 16px',
         }}>
@@ -711,9 +730,8 @@ export default function GamePage({ game, navigateTo }) {
       <div>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16, flexWrap: 'wrap', gap: 10 }}>
           <h2 style={{
-            fontFamily: fonts.heading,
-            fontSize: 18,
-            fontWeight: 700,
+            fontFamily: fonts.pixel,
+            fontSize: 10,
             color: colors.text,
             margin: 0,
           }}>

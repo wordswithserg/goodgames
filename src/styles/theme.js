@@ -13,6 +13,7 @@ export const colors = {
 export const fonts = {
   heading: "Georgia, 'Times New Roman', serif",
   body: 'system-ui, sans-serif',
+  pixel: "'Press Start 2P', monospace",
 };
 
 export const card = {

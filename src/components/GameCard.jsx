@@ -70,25 +70,34 @@ export default function GameCard({ game, reviews = {}, onClick, isTop10 = false,
       {/* Cover */}
       <div style={{
         height: 100,
-        background: game.coverColor,
+        background: game.coverColor || '#1B2A4A',
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
         position: 'relative',
+        overflow: 'hidden',
       }}>
-        <span style={{
-          fontFamily: fonts.heading,
-          fontSize: 11,
-          color: 'rgba(255,255,255,0.85)',
-          textAlign: 'center',
-          padding: '0 8px',
-          lineHeight: 1.3,
-          fontWeight: 700,
-          letterSpacing: '0.2px',
-          textShadow: '0 1px 3px rgba(0,0,0,0.4)',
-        }}>
-          {game.title}
-        </span>
+        {game.coverUrl ? (
+          <img
+            src={game.coverUrl}
+            alt={game.title}
+            style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover' }}
+          />
+        ) : (
+          <span style={{
+            fontFamily: fonts.heading,
+            fontSize: 11,
+            color: 'rgba(255,255,255,0.85)',
+            textAlign: 'center',
+            padding: '0 8px',
+            lineHeight: 1.3,
+            fontWeight: 700,
+            letterSpacing: '0.2px',
+            textShadow: '0 1px 3px rgba(0,0,0,0.4)',
+          }}>
+            {game.title}
+          </span>
+        )}
 
         {/* Top Rated badge — top-left */}
         {isTopRated && (

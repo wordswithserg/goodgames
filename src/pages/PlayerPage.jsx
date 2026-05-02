@@ -1,15 +1,16 @@
 import { useState, useEffect, useRef } from 'react';
 import { colors, fonts, card, button, input } from '../styles/theme';
-import { games, gamesByGenre } from '../data/games';
+import { games } from '../data/games';
 import { GENRE_COLORS, StarDisplay } from '../components/GameCard';
 import { useAuth } from '../contexts/AuthContext';
 import { supabase } from '../lib/supabase';
 import RequireAuth from '../components/auth/RequireAuth';
+import { getGameById as getIgdbGame, searchGames, fetchIgdbGenres } from '../lib/igdb';
 
-function computeCompleteness({ top10, wishlist, genreFavs, aboutAnswers }) {
+function computeCompleteness({ top10, wishlist, genreFavSlots, aboutAnswers }) {
   let score = 0;
   score += Math.min((top10?.length || 0) * 4, 40);
-  const favs = Object.values(genreFavs || {}).filter(Boolean);
+  const favs = (genreFavSlots || []).filter(s => s.gameId);
   score += Math.min(favs.length * 5, 20);
   const answered = (aboutAnswers || []).filter(qa => qa.answer?.trim()).length;
   score += Math.min(answered * 10, 30);
@@ -26,17 +27,21 @@ const ABOUT_QUESTIONS = [
   "Last game that made you feel something?",
 ];
 
-const GENRE_LABELS = { rpg: 'RPG', fps: 'FPS', cozy: 'Cozy', coop: 'Co-op' };
+const EMPTY_SLOTS = [
+  { slotKey: '0', genreId: null, genreName: null, gameId: null },
+  { slotKey: '1', genreId: null, genreName: null, gameId: null },
+  { slotKey: '2', genreId: null, genreName: null, gameId: null },
+  { slotKey: '3', genreId: null, genreName: null, gameId: null },
+];
 
 function SectionHeader({ children }) {
   return (
     <h2 style={{
-      fontFamily: fonts.heading,
-      fontSize: 20,
-      fontWeight: 700,
+      fontFamily: fonts.pixel,
+      fontSize: 10,
       color: colors.text,
-      margin: '0 0 14px',
-      paddingBottom: 8,
+      margin: '0 0 16px',
+      paddingBottom: 10,
       borderBottom: `2px solid ${colors.border}`,
     }}>
       {children}
@@ -44,69 +49,86 @@ function SectionHeader({ children }) {
   );
 }
 
-function GameSearch({ onSelect, exclude = [], placeholder = 'Search games…' }) {
+function IgdbGameSearch({ onSelect, exclude = [], placeholder = 'Search games…' }) {
   const [q, setQ] = useState('');
+  const [results, setResults] = useState([]);
+  const [loading, setLoading] = useState(false);
   const [open, setOpen] = useState(false);
-  const ref = useRef(null);
 
-  const results = q.trim()
-    ? games.filter(g => !exclude.includes(g.id) && g.title.toLowerCase().includes(q.toLowerCase())).slice(0, 8)
-    : [];
+  useEffect(() => {
+    if (!q.trim()) { setResults([]); setOpen(false); setLoading(false); return; }
+    setLoading(true);
+    setResults([]);
+    const t = setTimeout(() => {
+      searchGames(q.trim())
+        .then(data => {
+          setResults(data.filter(g => !exclude.includes(g.id)));
+          setOpen(true);
+        })
+        .catch(() => setResults([]))
+        .finally(() => setLoading(false));
+    }, 350);
+    return () => clearTimeout(t);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [q]);
+
+  function pick(game) {
+    onSelect(game);
+    setQ('');
+    setResults([]);
+    setOpen(false);
+  }
+
+  const showDropdown = q.trim().length > 0 && (loading || open);
 
   return (
-    <div style={{ position: 'relative' }} ref={ref}>
+    <div style={{ position: 'relative' }}>
       <input
         type="text"
         value={q}
         placeholder={placeholder}
-        onChange={e => { setQ(e.target.value); setOpen(true); }}
-        onFocus={() => setOpen(true)}
+        onChange={e => setQ(e.target.value)}
+        onFocus={() => results.length > 0 && setOpen(true)}
         onBlur={() => setTimeout(() => setOpen(false), 150)}
         style={{ ...input.base, fontSize: 13 }}
       />
-      {open && results.length > 0 && (
+      {showDropdown && (
         <div style={{
-          position: 'absolute',
-          top: '100%',
-          left: 0,
-          right: 0,
-          background: colors.white,
-          border: `1px solid ${colors.border}`,
-          borderRadius: 8,
-          boxShadow: '0 4px 16px rgba(0,0,0,0.12)',
-          zIndex: 200,
-          maxHeight: 240,
-          overflowY: 'auto',
+          position: 'absolute', top: '100%', left: 0, right: 0,
+          background: colors.white, border: `1px solid ${colors.border}`,
+          borderRadius: 8, boxShadow: '0 4px 16px rgba(0,0,0,0.12)',
+          zIndex: 200, maxHeight: 260, overflowY: 'auto', marginTop: 2,
         }}>
-          {results.map(g => (
+          {loading && (
+            <div style={{ padding: '10px 14px', fontFamily: fonts.body, fontSize: 13, color: colors.muted }}>
+              Searching…
+            </div>
+          )}
+          {!loading && results.length === 0 && (
+            <div style={{ padding: '10px 14px', fontFamily: fonts.body, fontSize: 13, color: colors.muted }}>
+              No games found for "{q}"
+            </div>
+          )}
+          {!loading && results.map(g => (
             <div
               key={g.id}
-              onMouseDown={() => { onSelect(g); setQ(''); setOpen(false); }}
+              onMouseDown={() => pick(g)}
               style={{
-                padding: '9px 14px',
-                cursor: 'pointer',
-                fontFamily: fonts.body,
-                fontSize: 13,
-                color: colors.text,
+                padding: '8px 12px', cursor: 'pointer',
+                fontFamily: fonts.body, fontSize: 13, color: colors.text,
                 borderBottom: `1px solid ${colors.border}`,
-                display: 'flex',
-                alignItems: 'center',
-                gap: 8,
+                display: 'flex', alignItems: 'center', gap: 8,
               }}
               onMouseEnter={e => e.currentTarget.style.background = colors.lightBg}
               onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
             >
-              <div style={{
-                width: 20,
-                height: 20,
-                borderRadius: 4,
-                background: g.coverColor,
-                flexShrink: 0,
-              }} />
-              <span>{g.title}</span>
-              <span style={{ marginLeft: 'auto', fontSize: 11, color: colors.muted }}>
-                {GENRE_LABELS[g.genre]}
-              </span>
+              {g.coverUrl ? (
+                <img src={g.coverUrl} alt={g.title} style={{ width: 24, height: 32, objectFit: 'cover', borderRadius: 3, flexShrink: 0 }} />
+              ) : (
+                <div style={{ width: 24, height: 32, borderRadius: 3, background: colors.border, flexShrink: 0 }} />
+              )}
+              <span style={{ flex: 1, fontWeight: 500 }}>{g.title}</span>
+              <span style={{ fontSize: 11, color: colors.muted, flexShrink: 0 }}>{g.year}</span>
             </div>
           ))}
         </div>
@@ -119,13 +141,24 @@ export default function PlayerPage({ navigateTo }) {
   const { user, profile, signOut, loading, isLoggedIn } = useAuth();
   const currentUser = profile?.username || null;
   const [editMode, setEditMode] = useState(false);
+  const [showTop10Search, setShowTop10Search] = useState(false);
+
+  const [nowPlayingId, setNowPlayingId] = useState(null);
+  const [nowPlayingGame, setNowPlayingGame] = useState(null);
+  const [nowPlayingLoading, setNowPlayingLoading] = useState(false);
+  const [showNowPlayingSearch, setShowNowPlayingSearch] = useState(false);
 
   const [top10, setTop10] = useState([]);
+  const [top10IgdbGames, setTop10IgdbGames] = useState({});
   const [wishlist, setWishlist] = useState([]);
   const [myReviews, setMyReviews] = useState([]);
+  const [reviewGameInfo, setReviewGameInfo] = useState({});
   const [dataLoading, setDataLoading] = useState(true);
 
-  const [genreFavs, setGenreFavs] = useState({});
+  const [genreFavSlots, setGenreFavSlots] = useState(EMPTY_SLOTS);
+  const [favIgdbGames, setFavIgdbGames] = useState({});
+  const [igdbGenres, setIgdbGenres] = useState([]);
+  const [wishlistIgdbGames, setWishlistIgdbGames] = useState({});
   const [aboutAnswers, setAboutAnswers] = useState([
     { question: ABOUT_QUESTIONS[0], answer: '' },
     { question: ABOUT_QUESTIONS[1], answer: '' },
@@ -138,7 +171,7 @@ export default function PlayerPage({ navigateTo }) {
     let cancelled = false;
     setDataLoading(true);
     async function fetchData() {
-      const [top10Result, wishlistResult, reviewsResult] = await Promise.all([
+      const [top10Result, wishlistResult, reviewsResult, genreFavsResult, aboutMeResult] = await Promise.all([
         supabase
           .from('top10')
           .select('game_id, rank')
@@ -153,39 +186,113 @@ export default function PlayerPage({ navigateTo }) {
           .select('id, game_id, rating, body, created_at')
           .eq('user_id', user.id)
           .order('created_at', { ascending: false }),
+        supabase
+          .from('genre_favorites')
+          .select('genre, game_id, genre_id, genre_name')
+          .eq('user_id', user.id),
+        supabase
+          .from('about_me')
+          .select('question_key, answer')
+          .eq('user_id', user.id),
       ]);
       if (cancelled) return;
+
       if (!top10Result.error) setTop10((top10Result.data || []).map(r => r.game_id));
       if (!wishlistResult.error) setWishlist((wishlistResult.data || []).map(r => r.game_id));
       if (!reviewsResult.error) setMyReviews(reviewsResult.data || []);
+
+      if (!genreFavsResult.error) {
+        const bySlot = {};
+        (genreFavsResult.data || []).forEach(r => { bySlot[r.genre] = r; });
+        setGenreFavSlots(EMPTY_SLOTS.map(s => {
+          const row = bySlot[s.slotKey];
+          return row
+            ? { slotKey: s.slotKey, genreId: row.genre_id || null, genreName: row.genre_name || null, gameId: row.game_id || null }
+            : s;
+        }));
+      }
+
+      if (!aboutMeResult.error) {
+        const stored = (aboutMeResult.data || []).slice(0, 3).map(r => ({
+          question: r.question_key,
+          answer: r.answer,
+        }));
+        const storedQuestions = new Set(stored.map(e => e.question));
+        const defaults = ABOUT_QUESTIONS
+          .filter(q => !storedQuestions.has(q))
+          .map(q => ({ question: q, answer: '' }));
+        setAboutAnswers([...stored, ...defaults].slice(0, 3));
+      }
+
       setDataLoading(false);
     }
     fetchData();
     return () => { cancelled = true; };
   }, [user?.id]);
 
-  // Load localStorage-backed data (genreFavs, aboutAnswers)
+  // Fetch IGDB genre list once on mount for the genre selector.
   useEffect(() => {
-    if (!currentUser) return;
-    const key = `gg_playerData_${currentUser}`;
-    try {
-      const stored = JSON.parse(localStorage.getItem(key) || '{}');
-      if (stored.genreFavorites) setGenreFavs(stored.genreFavorites);
-      if (stored.aboutAnswers) setAboutAnswers(stored.aboutAnswers);
-    } catch {}
-  }, [currentUser]);
+    fetchIgdbGenres().then(setIgdbGenres).catch(() => {});
+  }, []);
 
-  function saveLocalData(updates) {
-    if (!currentUser) return;
-    const key = `gg_playerData_${currentUser}`;
-    try {
-      const stored = JSON.parse(localStorage.getItem(key) || '{}');
-      localStorage.setItem(key, JSON.stringify({ ...stored, ...updates }));
-    } catch {}
-  }
+  // Fetch IGDB game info for any igdb_ ids in the top 10.
+  useEffect(() => {
+    const igdbIds = [...new Set(top10.filter(id => String(id).startsWith('igdb_')))];
+    if (!igdbIds.length) return;
+    Promise.all(igdbIds.map(id => getIgdbGame(id).then(g => g ? [id, g] : null)))
+      .then(results => {
+        const map = {};
+        results.filter(Boolean).forEach(([id, g]) => { map[id] = g; });
+        setTop10IgdbGames(prev => ({ ...prev, ...map }));
+      });
+  }, [top10]);
+
+  // Fetch IGDB game info for any igdb_ game ids stored in genre favorite slots.
+  useEffect(() => {
+    const igdbIds = [...new Set(
+      genreFavSlots.map(s => s.gameId).filter(id => id && String(id).startsWith('igdb_'))
+    )];
+    if (!igdbIds.length) return;
+    Promise.all(igdbIds.map(id => getIgdbGame(id).then(g => g ? [id, g] : null)))
+      .then(results => {
+        const map = {};
+        results.filter(Boolean).forEach(([id, g]) => { map[id] = g; });
+        setFavIgdbGames(prev => ({ ...prev, ...map }));
+      });
+  }, [genreFavSlots]);
+
+  // Fetch IGDB game info for any igdb_ ids in the wishlist.
+  useEffect(() => {
+    const igdbIds = [...new Set(wishlist.filter(id => String(id).startsWith('igdb_')))];
+    if (!igdbIds.length) return;
+    Promise.all(igdbIds.map(id => getIgdbGame(id).then(g => g ? [id, g] : null)))
+      .then(results => {
+        const map = {};
+        results.filter(Boolean).forEach(([id, g]) => { map[id] = g; });
+        setWishlistIgdbGames(prev => ({ ...prev, ...map }));
+      });
+  }, [wishlist]);
+
+  // For reviews of IGDB games, fetch their title/cover from IGDB.
+  useEffect(() => {
+    const igdbIds = [...new Set(
+      myReviews.map(r => r.game_id).filter(id => String(id).startsWith('igdb_'))
+    )];
+    if (!igdbIds.length) return;
+    Promise.all(igdbIds.map(id => getIgdbGame(id).then(g => g ? [id, g] : null)))
+      .then(results => {
+        const map = {};
+        results.filter(Boolean).forEach(([id, g]) => { map[id] = g; });
+        setReviewGameInfo(prev => ({ ...prev, ...map }));
+      });
+  }, [myReviews]);
+
 
   async function addToTop10(game) {
     if (top10.length >= 10 || top10.includes(game.id)) return;
+    if (String(game.id).startsWith('igdb_')) {
+      setTop10IgdbGames(prev => ({ ...prev, [game.id]: game }));
+    }
     const newRank = top10.length + 1;
     const optimistic = [...top10, game.id];
     setTop10(optimistic);
@@ -232,24 +339,90 @@ export default function PlayerPage({ navigateTo }) {
     await supabase.from('top10').upsert(rows, { onConflict: 'user_id,game_id' });
   }
 
-  function setGenreFav(genre, gameId) {
-    const next = { ...genreFavs, [genre]: gameId || null };
-    setGenreFavs(next);
-    saveLocalData({ genreFavorites: next });
+  async function setSlotGenre(slotKey, genreId, genreName) {
+    setGenreFavSlots(prev => prev.map(s =>
+      s.slotKey === slotKey ? { ...s, genreId, genreName, gameId: null } : s
+    ));
+    await supabase.from('genre_favorites')
+      .upsert(
+        { user_id: user.id, genre: slotKey, genre_id: genreId, genre_name: genreName, game_id: null },
+        { onConflict: 'user_id,genre_id' }
+      );
   }
 
-  function setAboutAnswer(idx, field, value) {
+  async function setSlotGame(slotKey, gameId, gameObject) {
+    const slot = genreFavSlots.find(s => s.slotKey === slotKey);
+    setGenreFavSlots(prev => prev.map(s =>
+      s.slotKey === slotKey ? { ...s, gameId } : s
+    ));
+    if (gameObject && String(gameId).startsWith('igdb_')) {
+      setFavIgdbGames(prev => ({ ...prev, [gameId]: gameObject }));
+    }
+    await supabase.from('genre_favorites')
+      .upsert(
+        { user_id: user.id, genre: slotKey, genre_id: slot?.genreId || null, genre_name: slot?.genreName || null, game_id: gameId },
+        { onConflict: 'user_id,genre_id' }
+      );
+  }
+
+  async function setAboutAnswer(idx, field, value) {
     const next = [...aboutAnswers];
-    next[idx] = { ...next[idx], [field]: value };
+    const old = next[idx];
+    next[idx] = { ...old, [field]: value };
     setAboutAnswers(next);
-    saveLocalData({ aboutAnswers: next });
+
+    if (field === 'answer') {
+      await supabase.from('about_me')
+        .upsert({ user_id: user.id, question_key: old.question, answer: value }, { onConflict: 'user_id,question_key' });
+    } else if (field === 'question' && old.question !== value) {
+      // User switched which question is in this slot — move the row to the new key.
+      await supabase.from('about_me')
+        .delete().eq('user_id', user.id).eq('question_key', old.question);
+      if (old.answer) {
+        await supabase.from('about_me')
+          .upsert({ user_id: user.id, question_key: value, answer: old.answer }, { onConflict: 'user_id,question_key' });
+      }
+    }
+  }
+
+  // Sync nowPlayingId from profile once auth resolves (useState initializer runs before profile loads).
+  useEffect(() => {
+    setNowPlayingId(profile?.now_playing_game_id || null);
+  }, [profile?.now_playing_game_id]); // eslint-disable-line
+
+  // Resolve now_playing_game_id to a full game object whenever it changes.
+  useEffect(() => {
+    if (!nowPlayingId) { setNowPlayingGame(null); setNowPlayingLoading(false); return; }
+    if (String(nowPlayingId).startsWith('igdb_')) {
+      setNowPlayingLoading(true);
+      getIgdbGame(nowPlayingId)
+        .then(g => setNowPlayingGame(g || null))
+        .finally(() => setNowPlayingLoading(false));
+    } else {
+      setNowPlayingGame(games.find(g => g.id === Number(nowPlayingId)) || null);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [nowPlayingId]);
+
+  async function setNowPlaying(gameId, gameObject) {
+    setNowPlayingId(gameId);
+    if (gameObject) setNowPlayingGame(gameObject);
+    const { error } = await supabase.from('profiles').update({ now_playing_game_id: gameId }).eq('id', user.id);
+    if (error) console.error('[setNowPlaying] error:', error);
+  }
+
+  async function clearNowPlaying() {
+    setNowPlayingId(null);
+    setNowPlayingGame(null);
+    const { error } = await supabase.from('profiles').update({ now_playing_game_id: null }).eq('id', user.id);
+    if (error) console.error('[clearNowPlaying] error:', error);
   }
 
   function getGameById(id) {
     return games.find(g => g.id === id);
   }
 
-  const completeness = computeCompleteness({ top10, wishlist, genreFavs, aboutAnswers });
+  const completeness = computeCompleteness({ top10, wishlist, genreFavSlots, aboutAnswers });
 
   if (loading || dataLoading) return null;
   if (!isLoggedIn) return <RequireAuth message="Log in to view your profile." />;
@@ -284,11 +457,11 @@ export default function PlayerPage({ navigateTo }) {
           </div>
           <div>
             <h1 style={{
-              fontFamily: fonts.heading,
-              fontSize: 26,
-              fontWeight: 700,
+              fontFamily: fonts.pixel,
+              fontSize: 11,
               color: colors.text,
               margin: 0,
+              lineHeight: 1.6,
             }}>
               {currentUser}
             </h1>
@@ -333,6 +506,127 @@ export default function PlayerPage({ navigateTo }) {
         </div>
       </div>
 
+      {/* Now Playing */}
+      <div style={{ marginBottom: 20 }}>
+        {showNowPlayingSearch ? (
+          <div style={{ ...card, padding: '18px 22px' }}>
+            <div style={{ fontFamily: fonts.body, fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.8px', color: colors.muted, marginBottom: 10 }}>
+              Now Playing
+            </div>
+            <IgdbGameSearch
+              onSelect={game => { setNowPlaying(game.id, game); setShowNowPlayingSearch(false); }}
+              placeholder="Search for a game…"
+            />
+            <button
+              onClick={() => setShowNowPlayingSearch(false)}
+              style={{ ...button.ghost, marginTop: 10, fontSize: 12, padding: '5px 12px' }}
+            >
+              Cancel
+            </button>
+          </div>
+        ) : nowPlayingLoading ? (
+          <div style={{
+            borderRadius: 12, height: 220, background: colors.navy,
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+          }}>
+            <span style={{ fontFamily: fonts.body, fontSize: 13, color: 'rgba(255,255,255,0.4)' }}>Loading…</span>
+          </div>
+        ) : nowPlayingGame ? (
+          <div style={{ borderRadius: 12, overflow: 'hidden', height: 220, position: 'relative', background: nowPlayingGame.coverColor || colors.navy }}>
+            {/* Blurred background */}
+            {nowPlayingGame.coverUrl && (
+              <div style={{
+                position: 'absolute', inset: 0,
+                backgroundImage: `url(${nowPlayingGame.coverUrl})`,
+                backgroundSize: 'cover', backgroundPosition: 'center',
+                filter: 'blur(14px)', transform: 'scale(1.12)',
+              }} />
+            )}
+            {/* Dark overlay */}
+            <div style={{ position: 'absolute', inset: 0, background: 'rgba(0,0,0,0.58)' }} />
+            {/* Content */}
+            <div style={{
+              position: 'relative', zIndex: 1, height: '100%',
+              display: 'flex', flexDirection: 'column', justifyContent: 'space-between',
+              padding: '18px 24px',
+            }}>
+              <div style={{ fontFamily: fonts.body, fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '1.2px', color: 'rgba(255,255,255,0.55)' }}>
+                Now Playing
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 18 }}>
+                <div style={{
+                  width: 64, height: 86, borderRadius: 6, flexShrink: 0,
+                  background: nowPlayingGame.coverColor || colors.navy,
+                  overflow: 'hidden', boxShadow: '0 4px 20px rgba(0,0,0,0.6)',
+                }}>
+                  {nowPlayingGame.coverUrl && (
+                    <img src={nowPlayingGame.coverUrl} alt={nowPlayingGame.title} style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} />
+                  )}
+                </div>
+                <div>
+                  <div style={{ fontFamily: fonts.pixel, fontSize: 11, color: colors.white, lineHeight: 1.8, marginBottom: 8 }}>
+                    {nowPlayingGame.title}
+                  </div>
+                  {nowPlayingGame.year && (
+                    <div style={{ fontFamily: fonts.body, fontSize: 13, color: 'rgba(255,255,255,0.55)' }}>
+                      {nowPlayingGame.year}
+                    </div>
+                  )}
+                </div>
+              </div>
+              <div style={{ display: 'flex', gap: 8 }}>
+                <button
+                  onClick={() => setShowNowPlayingSearch(true)}
+                  style={{
+                    background: 'rgba(255,255,255,0.12)', border: '1px solid rgba(255,255,255,0.28)',
+                    color: colors.white, borderRadius: 6, padding: '5px 14px',
+                    fontFamily: fonts.body, fontSize: 12, fontWeight: 600, cursor: 'pointer',
+                  }}
+                >
+                  Change
+                </button>
+                <button
+                  onClick={clearNowPlaying}
+                  style={{
+                    background: 'transparent', border: '1px solid rgba(255,255,255,0.18)',
+                    color: 'rgba(255,255,255,0.55)', borderRadius: 6, padding: '5px 14px',
+                    fontFamily: fonts.body, fontSize: 12, fontWeight: 600, cursor: 'pointer',
+                  }}
+                >
+                  Clear
+                </button>
+              </div>
+            </div>
+          </div>
+        ) : (
+          <div
+            onClick={() => setShowNowPlayingSearch(true)}
+            style={{
+              borderRadius: 12, height: 220, background: colors.navy,
+              border: '2px dashed rgba(255,255,255,0.12)',
+              display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+              gap: 14, cursor: 'pointer', transition: 'background 0.15s',
+            }}
+            onMouseEnter={e => e.currentTarget.style.background = '#243558'}
+            onMouseLeave={e => e.currentTarget.style.background = colors.navy}
+          >
+            <div style={{ fontFamily: fonts.body, fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '1.2px', color: 'rgba(255,255,255,0.35)' }}>
+              Now Playing
+            </div>
+            <button
+              onClick={e => { e.stopPropagation(); setShowNowPlayingSearch(true); }}
+              style={{
+                background: 'rgba(255,255,255,0.1)', border: '1px solid rgba(255,255,255,0.22)',
+                color: colors.white, borderRadius: 6, padding: '8px 20px',
+                fontFamily: fonts.body, fontSize: 13, fontWeight: 600, cursor: 'pointer',
+              }}
+            >
+              Set Now Playing
+            </button>
+          </div>
+        )}
+      </div>
+
       {/* Top 10 */}
       <div style={{ ...card, padding: '20px 24px', marginBottom: 20 }}>
         <SectionHeader>Top 10 Games</SectionHeader>
@@ -342,7 +636,8 @@ export default function PlayerPage({ navigateTo }) {
           </p>
         )}
         {top10.map((id, idx) => {
-          const game = getGameById(id);
+          const isIgdb = String(id).startsWith('igdb_');
+          const game = isIgdb ? top10IgdbGames[id] : getGameById(id);
           if (!game) return null;
           const gc = GENRE_COLORS[game.genre] || { bg: '#EEE', text: '#555' };
           return (
@@ -368,9 +663,19 @@ export default function PlayerPage({ navigateTo }) {
                 width: 32,
                 height: 32,
                 borderRadius: 6,
-                background: game.coverColor,
+                background: game.coverColor || colors.navy,
                 flexShrink: 0,
-              }} />
+                overflow: 'hidden',
+                position: 'relative',
+              }}>
+                {game.coverUrl && (
+                  <img
+                    src={game.coverUrl}
+                    alt={game.title}
+                    style={{ width: '100%', height: '100%', objectFit: 'cover', position: 'absolute', inset: 0 }}
+                  />
+                )}
+              </div>
               <div style={{ flex: 1 }}>
                 <div style={{ fontFamily: fonts.body, fontWeight: 600, fontSize: 14, color: colors.text }}>
                   {game.title}
@@ -425,11 +730,20 @@ export default function PlayerPage({ navigateTo }) {
         })}
         {editMode && top10.length < 10 && (
           <div style={{ marginTop: 14 }}>
-            <GameSearch
-              onSelect={addToTop10}
-              exclude={top10}
-              placeholder={`Add game (${top10.length}/10)…`}
-            />
+            {showTop10Search ? (
+              <IgdbGameSearch
+                onSelect={game => { addToTop10(game); setShowTop10Search(false); }}
+                exclude={top10}
+                placeholder="Search for a game to add…"
+              />
+            ) : (
+              <button
+                onClick={() => setShowTop10Search(true)}
+                style={{ ...button.ghost, fontSize: 13, padding: '6px 14px' }}
+              >
+                + Add Game ({top10.length}/10)
+              </button>
+            )}
           </div>
         )}
         {editMode && top10.length >= 10 && (
@@ -449,7 +763,10 @@ export default function PlayerPage({ navigateTo }) {
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
             {myReviews.map(review => {
-              const game = getGameById(review.game_id);
+              const isIgdb = String(review.game_id).startsWith('igdb_');
+              const game = isIgdb
+                ? reviewGameInfo[review.game_id]
+                : getGameById(review.game_id);
               if (!game) return null;
               const gc = GENRE_COLORS[game.genre] || { bg: '#EEE', text: '#555' };
               return (
@@ -474,9 +791,19 @@ export default function PlayerPage({ navigateTo }) {
                     width: 36,
                     height: 36,
                     borderRadius: 6,
-                    background: game.coverColor,
+                    background: game.coverColor || colors.navy,
                     flexShrink: 0,
-                  }} />
+                    overflow: 'hidden',
+                    position: 'relative',
+                  }}>
+                    {game.coverUrl && (
+                      <img
+                        src={game.coverUrl}
+                        alt={game.title}
+                        style={{ width: '100%', height: '100%', objectFit: 'cover', position: 'absolute', inset: 0 }}
+                      />
+                    )}
+                  </div>
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4, flexWrap: 'wrap' }}>
                       <span style={{ fontFamily: fonts.body, fontWeight: 600, fontSize: 14, color: colors.text }}>
@@ -523,52 +850,72 @@ export default function PlayerPage({ navigateTo }) {
       <div style={{ ...card, padding: '20px 24px', marginBottom: 20 }}>
         <SectionHeader>Genre Favorites</SectionHeader>
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
-          {Object.entries(GENRE_LABELS).map(([genre, label]) => {
-            const favId = genreFavs[genre];
-            const favGame = favId ? getGameById(favId) : null;
-            const gc = GENRE_COLORS[genre] || { bg: '#EEE', text: '#555' };
+          {genreFavSlots.map(slot => {
+            const favGame = slot.gameId
+              ? (String(slot.gameId).startsWith('igdb_') ? favIgdbGames[slot.gameId] : getGameById(slot.gameId))
+              : null;
             return (
-              <div key={genre} style={{
+              <div key={slot.slotKey} style={{
                 background: colors.lightBg,
                 borderRadius: 8,
                 padding: '12px 14px',
                 border: `1px solid ${colors.border}`,
               }}>
-                <div style={{
-                  fontFamily: fonts.body,
-                  fontSize: 11,
-                  fontWeight: 700,
-                  textTransform: 'uppercase',
-                  letterSpacing: '0.5px',
-                  color: gc.text,
-                  marginBottom: 8,
-                }}>
-                  {label}
-                </div>
+                {/* Genre label / selector */}
                 {editMode ? (
                   <select
-                    value={favId || ''}
-                    onChange={e => setGenreFav(genre, e.target.value || null)}
+                    value={slot.genreId || ''}
+                    onChange={e => {
+                      const selected = igdbGenres.find(g => g.id === Number(e.target.value));
+                      setSlotGenre(slot.slotKey, selected?.id || null, selected?.name || null);
+                    }}
                     style={{
-                      ...input.base,
-                      fontSize: 13,
-                      padding: '6px 10px',
+                      ...input.base, fontSize: 11, padding: '3px 8px', marginBottom: 8,
+                      fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.4px',
+                      cursor: 'pointer',
                     }}
                   >
-                    <option value="">— Pick a favorite —</option>
-                    {gamesByGenre[genre]?.map(g => (
-                      <option key={g.id} value={g.id}>{g.title}</option>
+                    <option value="">— Pick a genre —</option>
+                    {igdbGenres.map(g => (
+                      <option key={g.id} value={g.id}>{g.name}</option>
                     ))}
                   </select>
+                ) : (
+                  <div style={{
+                    fontFamily: fonts.body, fontSize: 11, fontWeight: 700,
+                    textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: 8,
+                    color: slot.genreName ? colors.navy : colors.muted,
+                  }}>
+                    {slot.genreName || 'Pick a genre'}
+                  </div>
+                )}
+
+                {/* Game search or display */}
+                {editMode && slot.genreId ? (
+                  <IgdbGameSearch
+                    key={slot.slotKey}
+                    onSelect={game => setSlotGame(slot.slotKey, game.id, game)}
+                    placeholder={favGame ? `Change: ${favGame.title}` : 'Search for a game…'}
+                  />
+                ) : editMode && !slot.genreId ? (
+                  <span style={{ fontFamily: fonts.body, fontSize: 12, color: colors.muted, fontStyle: 'italic' }}>
+                    Select a genre first
+                  </span>
                 ) : favGame ? (
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                     <div style={{
-                      width: 24,
-                      height: 24,
-                      borderRadius: 4,
-                      background: favGame.coverColor,
-                      flexShrink: 0,
-                    }} />
+                      width: 24, height: 24, borderRadius: 4,
+                      background: favGame.coverColor || colors.navy,
+                      flexShrink: 0, overflow: 'hidden', position: 'relative',
+                    }}>
+                      {favGame.coverUrl && (
+                        <img
+                          src={favGame.coverUrl}
+                          alt={favGame.title}
+                          style={{ width: '100%', height: '100%', objectFit: 'cover', position: 'absolute', inset: 0 }}
+                        />
+                      )}
+                    </div>
                     <span style={{ fontFamily: fonts.body, fontSize: 13, fontWeight: 600, color: colors.text }}>
                       {favGame.title}
                     </span>
@@ -643,7 +990,8 @@ export default function PlayerPage({ navigateTo }) {
         ) : (
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10 }}>
             {wishlist.map(id => {
-              const game = getGameById(id);
+              const isIgdb = String(id).startsWith('igdb_');
+              const game = isIgdb ? wishlistIgdbGames[id] : getGameById(id);
               if (!game) return null;
               const gc = GENRE_COLORS[game.genre] || { bg: '#EEE', text: '#555' };
               return (
@@ -660,9 +1008,19 @@ export default function PlayerPage({ navigateTo }) {
                     width: 22,
                     height: 22,
                     borderRadius: 4,
-                    background: game.coverColor,
+                    background: game.coverColor || colors.navy,
                     flexShrink: 0,
-                  }} />
+                    overflow: 'hidden',
+                    position: 'relative',
+                  }}>
+                    {game.coverUrl && (
+                      <img
+                        src={game.coverUrl}
+                        alt={game.title}
+                        style={{ width: '100%', height: '100%', objectFit: 'cover', position: 'absolute', inset: 0 }}
+                      />
+                    )}
+                  </div>
                   <span style={{ fontFamily: fonts.body, fontSize: 13, fontWeight: 600, color: colors.text }}>
                     {game.title}
                   </span>

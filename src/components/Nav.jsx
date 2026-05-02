@@ -37,13 +37,11 @@ export default function Nav({ currentPage, navigateTo }) {
         }}
       >
         <span style={{
-          fontFamily: fonts.heading,
-          fontSize: 22,
-          fontWeight: 700,
+          fontFamily: fonts.pixel,
+          fontSize: 12,
           color: colors.bg,
-          letterSpacing: '-0.5px',
         }}>
-          good<span style={{ color: colors.yellow }}>games</span>
+          ark<span style={{ color: colors.yellow }}>ade</span>
         </span>
         <span style={{
           background: colors.orange,
@@ -69,9 +67,8 @@ export default function Nav({ currentPage, navigateTo }) {
               background: currentPage === link.page ? 'rgba(245,200,66,0.18)' : 'none',
               border: 'none',
               color: currentPage === link.page ? colors.yellow : colors.bg,
-              fontFamily: fonts.body,
-              fontSize: 15,
-              fontWeight: currentPage === link.page ? 600 : 400,
+              fontFamily: fonts.pixel,
+              fontSize: 9,
               cursor: 'pointer',
               padding: '6px 14px',
               borderRadius: 6,

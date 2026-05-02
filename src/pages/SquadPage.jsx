@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { colors, fonts, card, button, input } from '../styles/theme';
 import { getGameById } from '../data/games';
+import { getGameById as getIgdbGame } from '../lib/igdb';
 import { GENRE_COLORS } from '../components/GameCard';
 import { useAuth } from '../contexts/AuthContext';
 import { supabase } from '../lib/supabase';
@@ -430,7 +431,7 @@ function MemberSearchInput({ selected, onAdd, onRemove, excludeUsernames = [], p
   );
 }
 
-export default function SquadPage() {
+export default function SquadPage({ navigateTo }) {
   const { user, profile, loading, isLoggedIn } = useAuth();
   const currentUser = profile?.username || null;
 
@@ -440,6 +441,7 @@ export default function SquadPage() {
   const [polls, setPolls] = useState([]);
   const [threads, setThreads] = useState([]);
   const [topGames, setTopGames] = useState([]);
+  const [squadWishlist, setSquadWishlist] = useState([]);
   const [detailLoading, setDetailLoading] = useState(false);
   const [creating, setCreating] = useState(false);
   const [squadName, setSquadName] = useState('');
@@ -606,6 +608,49 @@ export default function SquadPage() {
     setTopGames(ranked);
   }
 
+  async function loadSquadWishlist(squad) {
+    const memberIds = squad.members.map(m => m.user_id);
+    if (memberIds.length < 2) { setSquadWishlist([]); return; }
+
+    const { data: wishlistRows } = await supabase
+      .from('wishlist')
+      .select('user_id, game_id')
+      .in('user_id', memberIds);
+
+    if (!wishlistRows?.length) { setSquadWishlist([]); return; }
+
+    const counts = {};
+    wishlistRows.forEach(row => {
+      counts[row.game_id] = (counts[row.game_id] || 0) + 1;
+    });
+
+    const qualifying = Object.entries(counts)
+      .filter(([, count]) => count >= 2)
+      .sort(([, a], [, b]) => b - a);
+
+    if (!qualifying.length) { setSquadWishlist([]); return; }
+
+    const igdbEntries = qualifying.filter(([id]) => String(id).startsWith('igdb_'));
+    const localEntries = qualifying.filter(([id]) => !String(id).startsWith('igdb_'));
+
+    const [igdbResults] = await Promise.all([
+      Promise.all(igdbEntries.map(([id]) => getIgdbGame(id).then(g => g ? [id, g] : null))),
+    ]);
+
+    const gameMap = {};
+    igdbResults.filter(Boolean).forEach(([id, g]) => { gameMap[id] = g; });
+    localEntries.forEach(([id]) => {
+      const g = getGameById(Number(id));
+      if (g) gameMap[id] = g;
+    });
+
+    setSquadWishlist(
+      qualifying
+        .map(([id, count]) => ({ game: gameMap[id], count }))
+        .filter(({ game }) => game)
+    );
+  }
+
   // ── effects ───────────────────────────────────────────────────────────────
 
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -617,8 +662,9 @@ export default function SquadPage() {
     if (!squad) return;
     setAddingMember(false);
     setNewMembers([]);
+    setSquadWishlist([]);
     setDetailLoading(true);
-    Promise.all([loadPolls(resolvedId), loadThreads(resolvedId), loadTopGames(squad)])
+    Promise.all([loadPolls(resolvedId), loadThreads(resolvedId), loadTopGames(squad), loadSquadWishlist(squad)])
       .finally(() => setDetailLoading(false));
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [resolvedId]);
@@ -781,7 +827,7 @@ export default function SquadPage() {
         {/* Create form */}
         {creating && (
           <div style={{ ...card, padding: '24px 28px', marginBottom: 24 }}>
-            <h2 style={{ fontFamily: fonts.heading, fontSize: 20, fontWeight: 700, color: colors.text, margin: '0 0 16px' }}>
+            <h2 style={{ fontFamily: fonts.pixel, fontSize: 10, color: colors.text, margin: '0 0 18px', lineHeight: 1.6 }}>
               Create a Squad
             </h2>
             <div style={{ marginBottom: 12 }}>
@@ -833,7 +879,7 @@ export default function SquadPage() {
         {!currentSquad && !creating && !squadsLoading && (
           <div style={{ textAlign: 'center', padding: '60px 24px', ...card }}>
             <div style={{ fontSize: 48, marginBottom: 16 }}>🎮</div>
-            <h2 style={{ fontFamily: fonts.heading, fontSize: 22, color: colors.text, marginBottom: 8 }}>
+            <h2 style={{ fontFamily: fonts.pixel, fontSize: 11, color: colors.text, marginBottom: 12, lineHeight: 1.6 }}>
               No squads yet
             </h2>
             <p style={{ fontFamily: fonts.body, fontSize: 14, color: colors.muted, marginBottom: 20 }}>
@@ -850,7 +896,7 @@ export default function SquadPage() {
           <div>
             {/* Squad header */}
             <div style={{ marginBottom: 24 }}>
-              <h1 style={{ fontFamily: fonts.heading, fontSize: 28, fontWeight: 700, color: colors.text, margin: '0 0 12px' }}>
+              <h1 style={{ fontFamily: fonts.pixel, fontSize: 12, color: colors.text, margin: '0 0 16px', lineHeight: 1.6 }}>
                 {currentSquad.name}
               </h1>
               <div style={{ display: 'flex', alignItems: 'center', gap: 0, flexWrap: 'wrap' }}>
@@ -922,7 +968,7 @@ export default function SquadPage() {
               <>
                 {/* Top Games */}
                 <div style={{ ...card, padding: '18px 22px', marginBottom: 20 }}>
-                  <h2 style={{ fontFamily: fonts.heading, fontSize: 18, fontWeight: 700, color: colors.text, margin: '0 0 14px' }}>
+                  <h2 style={{ fontFamily: fonts.pixel, fontSize: 10, color: colors.text, margin: '0 0 16px' }}>
                     Squad's Top Games
                   </h2>
                   {topGames.length === 0 ? (
@@ -961,9 +1007,66 @@ export default function SquadPage() {
                   })}
                 </div>
 
+                {/* Squad Wishlist */}
+                <div style={{ ...card, padding: '18px 22px', marginBottom: 20 }}>
+                  <h2 style={{ fontFamily: fonts.pixel, fontSize: 10, color: colors.text, margin: '0 0 16px' }}>
+                    Squad Wishlist
+                  </h2>
+                  {squadWishlist.length === 0 ? (
+                    <p style={{ fontFamily: fonts.body, fontSize: 13, color: colors.muted }}>
+                      No games in common yet — start wishlisting!
+                    </p>
+                  ) : (
+                    <div style={{
+                      display: 'flex', gap: 12, overflowX: 'auto', paddingBottom: 8,
+                      scrollbarWidth: 'thin', scrollbarColor: `${colors.border} transparent`,
+                    }}>
+                      {squadWishlist.map(({ game, count }) => (
+                        <div
+                          key={game.id}
+                          onClick={() => navigateTo && navigateTo('game', game)}
+                          style={{
+                            width: 130, minWidth: 130, background: colors.white,
+                            border: `1px solid ${colors.border}`, borderRadius: 8,
+                            overflow: 'hidden', cursor: 'pointer', flexShrink: 0,
+                            transition: 'transform 0.15s, box-shadow 0.15s',
+                          }}
+                          onMouseEnter={e => { e.currentTarget.style.transform = 'translateY(-2px)'; e.currentTarget.style.boxShadow = '0 4px 12px rgba(0,0,0,0.1)'; }}
+                          onMouseLeave={e => { e.currentTarget.style.transform = 'none'; e.currentTarget.style.boxShadow = 'none'; }}
+                        >
+                          <div style={{
+                            height: 90, background: game.coverColor || colors.navy,
+                            position: 'relative', overflow: 'hidden',
+                          }}>
+                            {game.coverUrl && (
+                              <img src={game.coverUrl} alt={game.title} style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} />
+                            )}
+                            <div style={{
+                              position: 'absolute', bottom: 5, right: 5,
+                              background: 'rgba(0,0,0,0.65)', color: colors.white,
+                              borderRadius: 4, padding: '2px 6px',
+                              fontFamily: fonts.body, fontSize: 10, fontWeight: 700,
+                            }}>
+                              {count} member{count !== 1 ? 's' : ''}
+                            </div>
+                          </div>
+                          <div style={{
+                            padding: '8px 10px', fontFamily: fonts.heading, fontSize: 12,
+                            fontWeight: 700, color: colors.text, lineHeight: 1.3,
+                            overflow: 'hidden', display: '-webkit-box',
+                            WebkitLineClamp: 2, WebkitBoxOrient: 'vertical',
+                          }}>
+                            {game.title}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
                 {/* Polls */}
                 <div style={{ ...card, padding: '18px 22px', marginBottom: 20 }}>
-                  <h2 style={{ fontFamily: fonts.heading, fontSize: 18, fontWeight: 700, color: colors.text, margin: '0 0 14px' }}>
+                  <h2 style={{ fontFamily: fonts.pixel, fontSize: 10, color: colors.text, margin: '0 0 16px' }}>
                     Polls
                   </h2>
                   <CreatePollForm onCreate={createPoll} />
@@ -983,7 +1086,7 @@ export default function SquadPage() {
 
                 {/* Next Meetup */}
                 <div style={{ ...card, padding: '18px 22px', marginBottom: 20 }}>
-                  <h2 style={{ fontFamily: fonts.heading, fontSize: 18, fontWeight: 700, color: colors.text, margin: '0 0 14px' }}>
+                  <h2 style={{ fontFamily: fonts.pixel, fontSize: 10, color: colors.text, margin: '0 0 16px' }}>
                     Next Game Night
                   </h2>
                   {currentSquad.meetup_date ? (
@@ -1022,7 +1125,7 @@ export default function SquadPage() {
 
                 {/* Threads */}
                 <div style={{ ...card, padding: '18px 22px' }}>
-                  <h2 style={{ fontFamily: fonts.heading, fontSize: 18, fontWeight: 700, color: colors.text, margin: '0 0 14px' }}>
+                  <h2 style={{ fontFamily: fonts.pixel, fontSize: 10, color: colors.text, margin: '0 0 16px' }}>
                     Threads
                   </h2>
                   <ThreadSection

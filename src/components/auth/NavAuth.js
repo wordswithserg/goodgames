@@ -1,13 +1,14 @@
 import React, { useState } from 'react'
 import { useAuth } from '../../contexts/AuthContext'
 import AuthModal from './AuthModal'
+import { fonts } from '../../styles/theme'
 
 const styles = {
   wrapper: { display: 'flex', alignItems: 'center', gap: '12px' },
   loginBtn: { padding: '7px 16px', backgroundColor: '#7c3aed', color: '#fff', border: 'none', borderRadius: '6px', fontSize: '13px', fontWeight: 600, cursor: 'pointer' },
   signupBtn: { padding: '7px 16px', backgroundColor: 'transparent', color: '#7c3aed', border: '1px solid #7c3aed', borderRadius: '6px', fontSize: '13px', fontWeight: 600, cursor: 'pointer' },
   userMenu: { position: 'relative', display: 'inline-block' },
-  avatar: { width: '34px', height: '34px', borderRadius: '50%', backgroundColor: '#7c3aed', color: '#fff', border: 'none', cursor: 'pointer', fontSize: '14px', fontWeight: 700, display: 'flex', alignItems: 'center', justifyContent: 'center' },
+  avatar: { width: '34px', height: '34px', borderRadius: '50%', backgroundColor: '#7c3aed', color: '#fff', border: 'none', cursor: 'pointer', fontFamily: fonts.pixel, fontSize: '10px', display: 'flex', alignItems: 'center', justifyContent: 'center' },
   dropdown: { position: 'absolute', right: 0, top: 'calc(100% + 8px)', backgroundColor: '#1a1a2e', border: '1px solid #2a2a4a', borderRadius: '8px', padding: '8px 0', minWidth: '160px', zIndex: 500, boxShadow: '0 8px 24px rgba(0,0,0,0.4)' },
   dropdownHeader: { padding: '8px 16px 12px', borderBottom: '1px solid #2a2a4a', marginBottom: '4px' },
   dropdownUsername: { fontSize: '13px', fontWeight: 700, color: '#fff' },
