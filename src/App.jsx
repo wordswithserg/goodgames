@@ -7,6 +7,8 @@ import Home from './pages/Home';
 import GamePage from './pages/GamePage';
 import PlayerPage from './pages/PlayerPage';
 import SquadPage from './pages/SquadPage';
+import SettingsPage from './pages/SettingsPage';
+import ResetPasswordPage from './pages/ResetPasswordPage';
 
 function load(key, fallback) {
   try {
@@ -21,7 +23,10 @@ export default function App() {
   const { profile } = useAuth();
   const currentUser = profile?.username || null;
 
-  const [currentPage, setCurrentPage] = useState(() => load('gg_currentPage', 'home'));
+  const [currentPage, setCurrentPage] = useState(() => {
+    if (window.location.pathname === '/reset-password') return 'reset-password';
+    return load('gg_currentPage', 'home');
+  });
   const [selectedGame, setSelectedGame] = useState(() => {
     const id = load('gg_selectedGameId', null);
     return id ? (getGameById(id) ?? null) : null;
@@ -53,6 +58,12 @@ export default function App() {
         )}
         {currentPage === 'squad' && (
           <SquadPage navigateTo={navigateTo} />
+        )}
+        {currentPage === 'settings' && (
+          <SettingsPage navigateTo={navigateTo} />
+        )}
+        {currentPage === 'reset-password' && (
+          <ResetPasswordPage navigateTo={navigateTo} />
         )}
       </main>
     </div>

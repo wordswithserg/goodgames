@@ -17,7 +17,7 @@ const styles = {
   logoutItem: { width: '100%', padding: '8px 16px', background: 'none', border: 'none', textAlign: 'left', fontSize: '13px', color: '#f87171', cursor: 'pointer', display: 'block', borderTop: '1px solid #2a2a4a', marginTop: '4px' },
 }
 
-export default function NavAuth({ onNavigateToProfile }) {
+export default function NavAuth({ onNavigateToProfile, onNavigateToSettings }) {
   const { user, profile, isLoggedIn, signOut, loading } = useAuth()
   const [showModal, setShowModal] = useState(false)
   const [modalTab, setModalTab] = useState('login')
@@ -49,6 +49,7 @@ export default function NavAuth({ onNavigateToProfile }) {
               <div style={styles.dropdownEmail}>{user.email}</div>
             </div>
             <button style={styles.dropdownItem} onClick={() => { setShowDropdown(false); onNavigateToProfile?.() }}>My Profile</button>
+            <button style={styles.dropdownItem} onClick={() => { setShowDropdown(false); onNavigateToSettings?.() }}>Settings</button>
             <button style={styles.logoutItem} onClick={async () => { setShowDropdown(false); await signOut() }}>Log Out</button>
           </div>
         </>

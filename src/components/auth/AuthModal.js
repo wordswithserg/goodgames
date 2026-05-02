@@ -1,5 +1,6 @@
 import React, { useState } from 'react'
 import { useAuth } from '../../contexts/AuthContext'
+import { supabase } from '../../lib/supabase'
 
 const styles = {
   overlay: { position: 'fixed', inset: 0, backgroundColor: 'rgba(0,0,0,0.75)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000, padding: '16px' },
@@ -15,6 +16,8 @@ const styles = {
   success: { backgroundColor: 'rgba(34,197,94,0.1)', border: '1px solid rgba(34,197,94,0.3)', borderRadius: '6px', padding: '10px 12px', marginBottom: '16px', color: '#86efac', fontSize: '13px' },
   closeBtn: { position: 'absolute', top: '16px', right: '16px', background: 'none', border: 'none', color: '#666', fontSize: '20px', cursor: 'pointer', padding: '4px 8px', lineHeight: 1 },
   hint: { fontSize: '11px', color: '#666', marginTop: '4px' },
+  forgotLink: { background: 'none', border: 'none', color: '#888', cursor: 'pointer', fontSize: '12px', marginTop: '4px', padding: 0, textDecoration: 'underline' },
+  backLink: { background: 'none', border: 'none', color: '#888', cursor: 'pointer', fontSize: '13px', marginTop: '12px', padding: 0, display: 'block', textDecoration: 'underline' },
 }
 
 export default function AuthModal({ onClose, defaultTab = 'login' }) {
@@ -23,6 +26,8 @@ export default function AuthModal({ onClose, defaultTab = 'login' }) {
   const [error, setError] = useState(null)
   const [successMsg, setSuccessMsg] = useState(null)
   const [submitting, setSubmitting] = useState(false)
+  const [resetEmail, setResetEmail] = useState('')
+  const [resetMsg, setResetMsg] = useState('')
   const { signIn, signUp } = useAuth()
 
   function handleChange(e) {
@@ -30,7 +35,7 @@ export default function AuthModal({ onClose, defaultTab = 'login' }) {
     setError(null)
   }
 
-  function switchTab(tab) { setActiveTab(tab); setError(null); setSuccessMsg(null) }
+  function switchTab(tab) { setActiveTab(tab); setError(null); setSuccessMsg(null); setResetMsg('') }
 
   async function handleSubmit(e) {
     e.preventDefault()
@@ -53,37 +58,80 @@ export default function AuthModal({ onClose, defaultTab = 'login' }) {
     } finally { setSubmitting(false) }
   }
 
+  async function handleForgotPassword() {
+    setError(null); setResetMsg('')
+    if (!resetEmail.trim()) { setError('Enter your email address.'); return }
+    const { error } = await supabase.auth.resetPasswordForEmail(resetEmail.trim(), {
+      redirectTo: `${window.location.origin}/reset-password`,
+    })
+    if (error) setError(error.message)
+    else setResetMsg('Check your email for a reset link.')
+  }
+
   return (
     <div style={styles.overlay} onClick={e => { if (e.target === e.currentTarget) onClose?.() }}>
       <div style={{ ...styles.modal, position: 'relative' }}>
         <button style={styles.closeBtn} onClick={onClose}>✕</button>
         <div style={styles.logo}>goodgames</div>
-        <div style={styles.tabs}>
-          <button style={styles.tab(activeTab === 'login')} onClick={() => switchTab('login')} type="button">Log In</button>
-          <button style={styles.tab(activeTab === 'signup')} onClick={() => switchTab('signup')} type="button">Sign Up</button>
-        </div>
+
+        {activeTab !== 'forgot' && (
+          <div style={styles.tabs}>
+            <button style={styles.tab(activeTab === 'login')} onClick={() => switchTab('login')} type="button">Log In</button>
+            <button style={styles.tab(activeTab === 'signup')} onClick={() => switchTab('signup')} type="button">Sign Up</button>
+          </div>
+        )}
+
         {error && <div style={styles.error}>{error}</div>}
         {successMsg && <div style={styles.success}>{successMsg}</div>}
-        <form onSubmit={handleSubmit}>
-          {activeTab === 'signup' && (
+
+        {activeTab === 'forgot' ? (
+          <div>
+            <h3 style={{ color: '#fff', marginTop: 0, marginBottom: 20, fontSize: 16 }}>Reset Password</h3>
+            {resetMsg && <div style={styles.success}>{resetMsg}</div>}
             <div style={styles.field}>
-              <label style={styles.label} htmlFor="username">Username</label>
-              <input id="username" name="username" type="text" value={formState.username} onChange={handleChange} placeholder="your_gamer_tag" style={styles.input} required />
-              <div style={styles.hint}>Letters, numbers, underscores. Min 3 chars.</div>
+              <label style={styles.label}>Email</label>
+              <input
+                type="email"
+                placeholder="you@example.com"
+                value={resetEmail}
+                onChange={e => { setResetEmail(e.target.value); setError(null) }}
+                style={styles.input}
+              />
             </div>
-          )}
-          <div style={styles.field}>
-            <label style={styles.label} htmlFor="email">Email</label>
-            <input id="email" name="email" type="email" value={formState.email} onChange={handleChange} placeholder="you@example.com" style={styles.input} required />
+            <button style={styles.submitBtn(false)} onClick={handleForgotPassword}>
+              Send Reset Email
+            </button>
+            <button style={styles.backLink} onClick={() => switchTab('login')}>
+              Back to Login
+            </button>
           </div>
-          <div style={styles.field}>
-            <label style={styles.label} htmlFor="password">Password</label>
-            <input id="password" name="password" type="password" value={formState.password} onChange={handleChange} style={styles.input} required />
-          </div>
-          <button type="submit" style={styles.submitBtn(submitting)} disabled={submitting}>
-            {submitting ? 'Please wait...' : activeTab === 'login' ? 'Log In' : 'Create Account'}
-          </button>
-        </form>
+        ) : (
+          <form onSubmit={handleSubmit}>
+            {activeTab === 'signup' && (
+              <div style={styles.field}>
+                <label style={styles.label} htmlFor="username">Username</label>
+                <input id="username" name="username" type="text" value={formState.username} onChange={handleChange} placeholder="your_gamer_tag" style={styles.input} required />
+                <div style={styles.hint}>Letters, numbers, underscores. Min 3 chars.</div>
+              </div>
+            )}
+            <div style={styles.field}>
+              <label style={styles.label} htmlFor="email">Email</label>
+              <input id="email" name="email" type="email" value={formState.email} onChange={handleChange} placeholder="you@example.com" style={styles.input} required />
+            </div>
+            <div style={styles.field}>
+              <label style={styles.label} htmlFor="password">Password</label>
+              <input id="password" name="password" type="password" value={formState.password} onChange={handleChange} style={styles.input} required />
+              {activeTab === 'login' && (
+                <button type="button" style={styles.forgotLink} onClick={() => switchTab('forgot')}>
+                  Forgot password?
+                </button>
+              )}
+            </div>
+            <button type="submit" style={styles.submitBtn(submitting)} disabled={submitting}>
+              {submitting ? 'Please wait...' : activeTab === 'login' ? 'Log In' : 'Create Account'}
+            </button>
+          </form>
+        )}
       </div>
     </div>
   )

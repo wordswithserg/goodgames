@@ -81,7 +81,7 @@ export default function Nav({ currentPage, navigateTo }) {
       </div>
 
       {/* Auth controls */}
-      <NavAuth onNavigateToProfile={() => navigateTo('player')} />
+      <NavAuth onNavigateToProfile={() => navigateTo('player')} onNavigateToSettings={() => navigateTo('settings')} />
     </nav>
   );
 }
