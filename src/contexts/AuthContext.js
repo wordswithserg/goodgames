@@ -58,7 +58,7 @@ export function AuthProvider({ children }) {
 
     fetchProfile()
     return () => { cancelled = true }
-  }, [user?.id])
+  }, [user])
 
   async function signUp({ email, password, username }) {
     const { data: existing } = await supabase

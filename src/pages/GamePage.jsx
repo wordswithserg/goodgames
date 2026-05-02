@@ -378,7 +378,7 @@ export default function GamePage({ game, navigateTo }) {
     }
     fetchVotes();
     return () => { cancelled = true; };
-  }, [reviewList, user?.id]);
+  }, [reviewList, user]);
 
   // Fetch wishlist status for this game.
   useEffect(() => {
@@ -387,7 +387,7 @@ export default function GamePage({ game, navigateTo }) {
     supabase.from('wishlist').select('game_id').eq('user_id', user.id).eq('game_id', game.id).maybeSingle()
       .then(({ data }) => { if (!cancelled) setIsWishlisted(!!data); });
     return () => { cancelled = true; };
-  }, [user?.id, game.id]);
+  }, [user, game.id]);
 
   // Fetch whether this game is in the user's top 10 (for badge).
   useEffect(() => {
@@ -396,7 +396,7 @@ export default function GamePage({ game, navigateTo }) {
     supabase.from('top10').select('game_id').eq('user_id', user.id).eq('game_id', game.id).maybeSingle()
       .then(({ data }) => { if (!cancelled) setIsInTop10(!!data); });
     return () => { cancelled = true; };
-  }, [user?.id, game.id]);
+  }, [user, game.id]);
 
   const avg = avgRating(reviewList);
   const gc = GENRE_COLORS[g.genre] || { bg: '#EEE', text: '#555' };

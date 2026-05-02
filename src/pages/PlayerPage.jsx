@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect } from 'react';
 import { colors, fonts, card, button, input } from '../styles/theme';
 import { games } from '../data/games';
 import { GENRE_COLORS, StarDisplay } from '../components/GameCard';
