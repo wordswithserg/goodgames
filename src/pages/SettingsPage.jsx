@@ -1,13 +1,30 @@
 import { useState } from 'react';
 import { supabase } from '../lib/supabase';
 import { useCurrentUser } from '../hooks/useCurrentUser';
+import { useAuth } from '../contexts/AuthContext';
 
 export default function SettingsPage() {
   const { username } = useCurrentUser();
+  const { user } = useAuth();
   const [newUsername, setNewUsername] = useState('');
   const [usernameMsg, setUsernameMsg] = useState('');
   const [usernameError, setUsernameError] = useState('');
   const [saving, setSaving] = useState(false);
+  const [resetMsg, setResetMsg] = useState('');
+  const [resetError, setResetError] = useState('');
+  const [sendingReset, setSendingReset] = useState(false);
+
+  const handlePasswordReset = async () => {
+    setSendingReset(true);
+    setResetMsg('');
+    setResetError('');
+    const { error } = await supabase.auth.resetPasswordForEmail(user.email, {
+      redirectTo: `${window.location.origin}/reset-password`,
+    });
+    if (error) setResetError(error.message);
+    else setResetMsg(`Reset link sent to ${user.email}`);
+    setSendingReset(false);
+  };
 
   const handleUsernameChange = async () => {
     const trimmed = newUsername.trim();
@@ -62,6 +79,18 @@ export default function SettingsPage() {
         </button>
         {usernameMsg && <p style={{ color: 'green', marginTop: 8 }}>{usernameMsg}</p>}
         {usernameError && <p style={{ color: 'red', marginTop: 8 }}>{usernameError}</p>}
+      </section>
+
+      <section style={{ marginBottom: 40 }}>
+        <h3 style={{ marginBottom: 8 }}>Reset Password</h3>
+        <p style={{ color: '#888', marginBottom: 16 }}>
+          We'll send a reset link to <strong>{user?.email}</strong>.
+        </p>
+        <button onClick={handlePasswordReset} disabled={sendingReset}>
+          {sendingReset ? 'Sending...' : 'Send Reset Email'}
+        </button>
+        {resetMsg && <p style={{ color: 'green', marginTop: 8 }}>{resetMsg}</p>}
+        {resetError && <p style={{ color: 'red', marginTop: 8 }}>{resetError}</p>}
       </section>
     </div>
   );
