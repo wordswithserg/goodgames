@@ -41,7 +41,7 @@ export default function App() {
   }
 
   return (
-    <div style={{ minHeight: '100vh', background: colors.bg }}>
+    <div style={{ minHeight: '100vh', background: `var(--page-bg, ${colors.bg})` }}>
       <Nav
         currentPage={currentPage === 'game' ? null : currentPage}
         navigateTo={navigateTo}

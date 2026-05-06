@@ -1,6 +1,7 @@
 // SQL MIGRATIONS — run once in the Supabase SQL editor:
 // ALTER TABLE profiles ADD COLUMN IF NOT EXISTS avatar_url text;
 // ALTER TABLE profiles ADD COLUMN IF NOT EXISTS profile_color text;
+// ALTER TABLE profiles ADD COLUMN IF NOT EXISTS bg_color text;
 
 import { useState, useEffect, useRef } from 'react';
 import { colors, fonts, card, button, input } from '../styles/theme';
@@ -162,6 +163,9 @@ export default function PlayerPage({ navigateTo }) {
 
   const [profileColor, setProfileColor] = useState(profile?.profile_color || null);
   const profileColorInputRef = useRef(null);
+
+  const [bgColor, setBgColor] = useState(profile?.bg_color || null);
+  const bgColorInputRef = useRef(null);
 
   const [nowPlayingId, setNowPlayingId] = useState(null);
   const [nowPlayingGame, setNowPlayingGame] = useState(null);
@@ -415,6 +419,12 @@ export default function PlayerPage({ navigateTo }) {
     setProfileColor(profile?.profile_color || null);
   }, [profile?.profile_color]); // eslint-disable-line
 
+  // Sync bgColor from profile once auth resolves.
+  useEffect(() => {
+    setBgColor(profile?.bg_color || null);
+  }, [profile?.bg_color]); // eslint-disable-line
+
+
   async function handleAvatarFileSelect(e) {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -450,6 +460,12 @@ export default function PlayerPage({ navigateTo }) {
   async function saveProfileColor(color) {
     setProfileColor(color);
     await supabase.from('profiles').update({ profile_color: color }).eq('id', user.id);
+  }
+
+  async function saveBgColor(color) {
+    setBgColor(color);
+    document.documentElement.style.setProperty('--page-bg', color || '');
+    await supabase.from('profiles').update({ bg_color: color }).eq('id', user.id);
   }
 
   // Sync nowPlayingId from profile once auth resolves (useState initializer runs before profile loads).
@@ -662,6 +678,33 @@ export default function PlayerPage({ navigateTo }) {
                 <button
                   onClick={() => saveProfileColor(null)}
                   title="Remove profile color"
+                  style={{ ...headerBtnStyle, padding: '7px 11px' }}
+                >
+                  ×
+                </button>
+              )}
+              <input
+                ref={bgColorInputRef}
+                type="color"
+                value={bgColor || '#F5F2EC'}
+                style={{ display: 'none' }}
+                onChange={e => saveBgColor(e.target.value)}
+              />
+              <button
+                onClick={() => bgColorInputRef.current?.click()}
+                style={{ ...headerBtnStyle, display: 'flex', alignItems: 'center', gap: 6 }}
+              >
+                <span style={{
+                  display: 'inline-block', width: 12, height: 12, borderRadius: '50%', flexShrink: 0,
+                  background: bgColor || (isHeaderDark ? 'rgba(255,255,255,0.3)' : 'rgba(0,0,0,0.15)'),
+                  border: `1px solid ${isHeaderDark ? 'rgba(255,255,255,0.4)' : 'rgba(0,0,0,0.2)'}`,
+                }} />
+                Background
+              </button>
+              {bgColor && (
+                <button
+                  onClick={() => saveBgColor(null)}
+                  title="Remove background color"
                   style={{ ...headerBtnStyle, padding: '7px 11px' }}
                 >
                   ×

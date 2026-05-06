@@ -60,6 +60,11 @@ export function AuthProvider({ children }) {
     return () => { cancelled = true }
   }, [user])
 
+  // Apply saved background color globally as soon as the profile loads.
+  useEffect(() => {
+    document.documentElement.style.setProperty('--page-bg', profile?.bg_color || '');
+  }, [profile?.bg_color]); // eslint-disable-line
+
   async function signUp({ email, password, username }) {
     const { data: existing } = await supabase
       .from('profiles')
