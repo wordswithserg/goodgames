@@ -1,3 +1,34 @@
+// SQL MIGRATIONS — run once in Supabase SQL editor:
+//
+// CREATE TABLE IF NOT EXISTS squad_notification_prefs (
+//   id uuid DEFAULT gen_random_uuid() PRIMARY KEY,
+//   user_id uuid NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,
+//   squad_id uuid NOT NULL REFERENCES squads(id) ON DELETE CASCADE,
+//   poll_created boolean NOT NULL DEFAULT true,
+//   poll_closing_soon boolean NOT NULL DEFAULT true,
+//   game_night_scheduled boolean NOT NULL DEFAULT true,
+//   thread_created boolean NOT NULL DEFAULT true,
+//   mentioned_in_thread boolean NOT NULL DEFAULT true,
+//   replied_in_thread boolean NOT NULL DEFAULT true,
+//   UNIQUE(user_id, squad_id)
+// );
+//
+// CREATE TABLE IF NOT EXISTS notifications (
+//   id uuid DEFAULT gen_random_uuid() PRIMARY KEY,
+//   user_id uuid NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,
+//   squad_id uuid REFERENCES squads(id) ON DELETE CASCADE,
+//   type text NOT NULL,
+//   body text NOT NULL,
+//   read boolean NOT NULL DEFAULT false,
+//   created_at timestamptz NOT NULL DEFAULT now()
+// );
+//
+// ALTER TABLE squad_notification_prefs ENABLE ROW LEVEL SECURITY;
+// ALTER TABLE notifications ENABLE ROW LEVEL SECURITY;
+// CREATE POLICY "Users manage own prefs" ON squad_notification_prefs FOR ALL USING (auth.uid() = user_id);
+// CREATE POLICY "Users read own notifications" ON notifications FOR SELECT USING (auth.uid() = user_id);
+// CREATE POLICY "Authenticated users insert notifications" ON notifications FOR INSERT TO authenticated WITH CHECK (true);
+
 import { useState, useEffect } from 'react';
 import { colors, fonts, card, button, input } from '../styles/theme';
 import { getGameById } from '../data/games';
@@ -10,6 +41,28 @@ import RequireAuth from '../components/auth/RequireAuth';
 function formatDate(iso) {
   return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 }
+
+function timeAgo(iso) {
+  const diff = Date.now() - new Date(iso).getTime();
+  const mins = Math.floor(diff / 60000);
+  if (mins < 1) return 'just now';
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `${hrs}h ago`;
+  const days = Math.floor(hrs / 24);
+  if (days === 1) return 'yesterday';
+  if (days < 7) return `${days}d ago`;
+  return formatDate(iso);
+}
+
+const NOTIF_META = {
+  poll_created:          { icon: '📊', sectionId: 'section-polls' },
+  poll_closing_soon:     { icon: '⏱',  sectionId: 'section-polls' },
+  game_night_scheduled:  { icon: '📅', sectionId: 'section-meetup' },
+  thread_created:        { icon: '💬', sectionId: 'section-threads' },
+  replied_in_thread:     { icon: '↩',  sectionId: 'section-threads' },
+  mentioned_in_thread:   { icon: '@',  sectionId: 'section-threads' },
+};
 
 function MemberAvatar({ name, size = 32, isYou = false }) {
   return (
@@ -450,6 +503,14 @@ export default function SquadPage({ navigateTo }) {
   const [newMembers, setNewMembers] = useState([]);
   const [meetupInput, setMeetupInput] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
+  const [notifPrefs, setNotifPrefs] = useState({
+    poll_created: true, poll_closing_soon: true, game_night_scheduled: true,
+    thread_created: true, mentioned_in_thread: true, replied_in_thread: true,
+  });
+  const [notifications, setNotifications] = useState([]);
+  const [notifsOpen, setNotifsOpen] = useState(false);
+  const [notifsLoading, setNotifsLoading] = useState(false);
 
   const resolvedId = activeSquadId || squads[0]?.id || null;
   const currentSquad = resolvedId ? squads.find(s => s.id === resolvedId) : null;
@@ -651,10 +712,122 @@ export default function SquadPage({ navigateTo }) {
     );
   }
 
+  async function loadNotifications() {
+    setNotifsLoading(true);
+    const { data: rows } = await supabase
+      .from('notifications')
+      .select('id, squad_id, type, body, read, created_at')
+      .eq('user_id', user.id)
+      .order('created_at', { ascending: false })
+      .limit(30);
+
+    if (!rows?.length) { setNotifications([]); setNotifsLoading(false); return; }
+
+    const squadIds = [...new Set(rows.map(r => r.squad_id).filter(Boolean))];
+    const { data: squadRows } = await supabase
+      .from('squads').select('id, name').in('id', squadIds);
+    const squadNameMap = Object.fromEntries((squadRows || []).map(s => [s.id, s.name]));
+
+    setNotifications(rows.map(r => ({ ...r, squad_name: squadNameMap[r.squad_id] || 'Unknown squad' })));
+    setNotifsLoading(false);
+  }
+
+  async function markRead(id) {
+    setNotifications(prev => prev.map(n => n.id === id ? { ...n, read: true } : n));
+    await supabase.from('notifications').update({ read: true }).eq('id', id).eq('user_id', user.id);
+  }
+
+  async function markAllRead() {
+    setNotifications(prev => prev.map(n => ({ ...n, read: true })));
+    await supabase.from('notifications').update({ read: true }).eq('user_id', user.id);
+  }
+
+  async function handleNotifClick(notif) {
+    if (!notif.read) await markRead(notif.id);
+    setActiveSquadId(notif.squad_id);
+    setCreating(false);
+    setNotifsOpen(false);
+    const sectionId = NOTIF_META[notif.type]?.sectionId;
+    if (sectionId) {
+      setTimeout(() => {
+        document.getElementById(sectionId)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }, 400);
+    }
+  }
+
+  async function loadNotifPrefs(squadId) {
+    const { data } = await supabase
+      .from('squad_notification_prefs')
+      .select('*')
+      .eq('user_id', user.id)
+      .eq('squad_id', squadId)
+      .single();
+    setNotifPrefs(data ? {
+      poll_created: data.poll_created,
+      poll_closing_soon: data.poll_closing_soon,
+      game_night_scheduled: data.game_night_scheduled,
+      thread_created: data.thread_created,
+      mentioned_in_thread: data.mentioned_in_thread,
+      replied_in_thread: data.replied_in_thread,
+    } : {
+      poll_created: true, poll_closing_soon: true, game_night_scheduled: true,
+      thread_created: true, mentioned_in_thread: true, replied_in_thread: true,
+    });
+  }
+
+  // Returns member user_ids (excluding self) who have prefKey = true (or no row → default true).
+  async function getSubscribedMemberIds(squadId, prefKey) {
+    const squad = squads.find(s => s.id === squadId);
+    if (!squad) return [];
+    const memberIds = squad.members.map(m => m.user_id);
+    const { data: prefRows } = await supabase
+      .from('squad_notification_prefs')
+      .select(`user_id, ${prefKey}`)
+      .eq('squad_id', squadId)
+      .in('user_id', memberIds);
+    const prefMap = Object.fromEntries((prefRows || []).map(r => [r.user_id, r[prefKey]]));
+    return memberIds.filter(id => {
+      if (id === user.id) return false;
+      const pref = prefMap[id];
+      return pref === undefined ? true : pref;
+    });
+  }
+
+  async function insertNotifications(userIds, squadId, type, body) {
+    if (!userIds.length) return;
+    await supabase.from('notifications').insert(
+      userIds.map(userId => ({ user_id: userId, squad_id: squadId, type, body }))
+    );
+  }
+
+  // TODO: mentioned_in_thread — trigger when a reply body is saved.
+  // Scan reply `body` for @username patterns: const mentions = body.match(/@(\w+)/g)?.map(m => m.slice(1)) ?? [];
+  // Then: SELECT id FROM profiles WHERE username = ANY(mentions) AND id IN (squad member ids).
+  // Filter those user_ids by mentioned_in_thread pref (same getSubscribedMemberIds pattern).
+  // Insert notification type 'mentioned_in_thread', body: `${actorUsername} mentioned you in ${squadName}: ${threadTitle}`
+  // Call this inside addReply() after the existing replied_in_thread block, excluding users already notified there.
+
+  // TODO: poll_closing_soon — requires a scheduled background job (e.g. Supabase pg_cron or Edge Function on a cron).
+  // Query: SELECT p.id, p.question, p.closes_at, p.squad_id, s.name AS squad_name
+  //        FROM polls p JOIN squads s ON s.id = p.squad_id
+  //        WHERE p.closes_at BETWEEN now() AND now() + interval '1 hour'
+  //          AND p.closing_soon_notified = false;
+  // For each matching poll: getSubscribedMemberIds(squad_id, 'poll_closing_soon'), insertNotifications(..., 'poll_closing_soon', ...)
+  // Then: UPDATE polls SET closing_soon_notified = true WHERE id = ANY(notified_ids);
+  // Requires adding `closes_at timestamptz` and `closing_soon_notified boolean DEFAULT false` columns to the polls table.
+
+  async function saveNotifPref(key, value) {
+    setNotifPrefs(prev => ({ ...prev, [key]: value }));
+    await supabase
+      .from('squad_notification_prefs')
+      .upsert({ user_id: user.id, squad_id: resolvedId, [key]: value }, { onConflict: 'user_id,squad_id' });
+  }
+
   // ── effects ───────────────────────────────────────────────────────────────
 
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  useEffect(() => { if (user?.id) loadSquads(); }, [user?.id]);
+  useEffect(() => { // eslint-disable-line react-hooks/exhaustive-deps
+    if (user?.id) { loadSquads(); loadNotifications(); }
+  }, [user?.id]); // eslint-disable-line
 
   useEffect(() => {
     if (!resolvedId) return;
@@ -663,9 +836,15 @@ export default function SquadPage({ navigateTo }) {
     setAddingMember(false);
     setNewMembers([]);
     setSquadWishlist([]);
+    setShowSettings(false);
     setDetailLoading(true);
-    Promise.all([loadPolls(resolvedId), loadThreads(resolvedId), loadTopGames(squad), loadSquadWishlist(squad)])
-      .finally(() => setDetailLoading(false));
+    Promise.all([
+      loadPolls(resolvedId),
+      loadThreads(resolvedId),
+      loadTopGames(squad),
+      loadSquadWishlist(squad),
+      loadNotifPrefs(resolvedId),
+    ]).finally(() => setDetailLoading(false));
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [resolvedId]);
 
@@ -736,27 +915,75 @@ export default function SquadPage({ navigateTo }) {
     const { error } = await supabase
       .from('polls')
       .insert({ squad_id: resolvedId, question, options });
-    if (!error) await loadPolls(resolvedId);
+    if (!error) {
+      await loadPolls(resolvedId);
+      const recipientIds = await getSubscribedMemberIds(resolvedId, 'poll_created');
+      await insertNotifications(recipientIds, resolvedId, 'poll_created',
+        `${currentUser} started a new poll in ${currentSquad.name}: ${question}`);
+    }
   }
 
   async function createThread(title) {
     const { error } = await supabase
       .from('threads')
       .insert({ squad_id: resolvedId, user_id: user.id, title });
-    if (!error) await loadThreads(resolvedId);
+    if (!error) {
+      await loadThreads(resolvedId);
+      const recipientIds = await getSubscribedMemberIds(resolvedId, 'thread_created');
+      await insertNotifications(recipientIds, resolvedId, 'thread_created',
+        `${currentUser} started a new thread in ${currentSquad.name}: ${title}`);
+    }
   }
 
   async function addReply(threadId, body) {
+    // Capture thread title before await (threads state is current at call time).
+    const thread = threads.find(t => t.id === threadId);
+    const threadTitle = thread?.title || 'a thread';
+
     const { error } = await supabase
       .from('replies')
       .insert({ thread_id: threadId, user_id: user.id, body });
-    if (!error) await loadThreads(resolvedId);
+    if (!error) {
+      await loadThreads(resolvedId);
+
+      // Notify all prior participants in this thread (author + previous repliers) who opted in.
+      const [{ data: priorReplies }, { data: threadRow }] = await Promise.all([
+        supabase.from('replies').select('user_id').eq('thread_id', threadId).neq('user_id', user.id),
+        supabase.from('threads').select('user_id').eq('id', threadId).single(),
+      ]);
+      const participantIds = [...new Set([
+        ...(priorReplies || []).map(r => r.user_id),
+        ...(threadRow ? [threadRow.user_id] : []),
+      ])].filter(id => id !== user.id);
+
+      if (participantIds.length) {
+        const { data: prefRows } = await supabase
+          .from('squad_notification_prefs')
+          .select('user_id, replied_in_thread')
+          .eq('squad_id', resolvedId)
+          .in('user_id', participantIds);
+        const prefMap = Object.fromEntries((prefRows || []).map(r => [r.user_id, r.replied_in_thread]));
+        const recipientIds = participantIds.filter(id => {
+          const pref = prefMap[id];
+          return pref === undefined ? true : pref;
+        });
+        await insertNotifications(recipientIds, resolvedId, 'replied_in_thread',
+          `${currentUser} replied in a thread you're following: ${threadTitle}`);
+      }
+    }
   }
 
   async function saveMeetup(squadId) {
     if (!meetupInput) return;
     await supabase.from('squads').update({ meetup_date: meetupInput }).eq('id', squadId);
     setSquads(prev => prev.map(s => s.id === squadId ? { ...s, meetup_date: meetupInput } : s));
+    const formattedDate = new Date(meetupInput).toLocaleString('en-US', {
+      weekday: 'long', month: 'long', day: 'numeric', hour: 'numeric', minute: '2-digit',
+    });
+    const squad = squads.find(s => s.id === squadId);
+    const recipientIds = await getSubscribedMemberIds(squadId, 'game_night_scheduled');
+    await insertNotifications(recipientIds, squadId, 'game_night_scheduled',
+      `Game night in ${squad?.name || 'your squad'} is scheduled for ${formattedDate}`);
     setMeetupInput('');
   }
 
@@ -824,6 +1051,151 @@ export default function SquadPage({ navigateTo }) {
 
       {/* Main */}
       <div style={{ flex: 1, minWidth: 0 }}>
+
+        {/* ── Notification Feed ─────────────────────────────────────────── */}
+        {(() => {
+          const unread = notifications.filter(n => !n.read);
+          const read   = notifications.filter(n => n.read);
+          const unreadCount = unread.length;
+          return (
+            <div style={{ marginBottom: 20 }}>
+              {/* Bell trigger row */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: notifsOpen ? 10 : 0 }}>
+                <button
+                  onClick={() => setNotifsOpen(o => !o)}
+                  style={{
+                    position: 'relative', background: 'none', border: 'none',
+                    cursor: 'pointer', padding: 4, color: colors.navy,
+                    display: 'flex', alignItems: 'center',
+                  }}
+                  title="Notifications"
+                >
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/>
+                    <path d="M13.73 21a2 2 0 0 1-3.46 0"/>
+                  </svg>
+                  {unreadCount > 0 && (
+                    <span style={{
+                      position: 'absolute', top: 0, right: 0,
+                      background: colors.orange, color: colors.white,
+                      borderRadius: '50%', width: 16, height: 16,
+                      fontSize: 9, fontFamily: fonts.body, fontWeight: 700,
+                      display: 'flex', alignItems: 'center', justifyContent: 'center',
+                      lineHeight: 1,
+                    }}>
+                      {unreadCount > 9 ? '9+' : unreadCount}
+                    </span>
+                  )}
+                </button>
+                {notifsOpen && unreadCount > 0 && (
+                  <button
+                    onClick={markAllRead}
+                    style={{
+                      background: 'none', border: 'none', cursor: 'pointer',
+                      fontFamily: fonts.body, fontSize: 12, color: colors.muted,
+                      padding: 0, textDecoration: 'underline',
+                    }}
+                  >
+                    Mark all as read
+                  </button>
+                )}
+              </div>
+
+              {/* Feed panel */}
+              {notifsOpen && (
+                <div style={{ ...card, padding: 0, overflow: 'hidden' }}>
+                  {notifsLoading ? (
+                    <div style={{ padding: '16px 18px', fontFamily: fonts.body, fontSize: 13, color: colors.muted }}>
+                      Loading…
+                    </div>
+                  ) : notifications.length === 0 ? (
+                    <div style={{ padding: '24px 18px', fontFamily: fonts.body, fontSize: 14, color: colors.muted, textAlign: 'center' }}>
+                      No notifications yet
+                    </div>
+                  ) : (
+                    <>
+                      {unread.map((n, i) => (
+                        <div
+                          key={n.id}
+                          onClick={() => handleNotifClick(n)}
+                          style={{
+                            display: 'flex', alignItems: 'flex-start', gap: 12,
+                            padding: '12px 16px',
+                            borderBottom: i < unread.length - 1 || read.length > 0 ? `1px solid ${colors.border}` : 'none',
+                            cursor: 'pointer',
+                            background: '#FFF8F3',
+                            borderLeft: `3px solid ${colors.orange}`,
+                            transition: 'background 0.12s',
+                          }}
+                          onMouseEnter={e => e.currentTarget.style.background = '#FFF0E6'}
+                          onMouseLeave={e => e.currentTarget.style.background = '#FFF8F3'}
+                        >
+                          <span style={{ fontSize: 16, flexShrink: 0, lineHeight: 1.4 }}>
+                            {NOTIF_META[n.type]?.icon || '•'}
+                          </span>
+                          <div style={{ flex: 1, minWidth: 0 }}>
+                            <div style={{ fontFamily: fonts.body, fontSize: 13, color: colors.text, lineHeight: 1.45 }}>
+                              {n.body}
+                            </div>
+                            <div style={{ display: 'flex', gap: 8, marginTop: 3 }}>
+                              <span style={{ fontFamily: fonts.body, fontSize: 11, color: colors.muted }}>{n.squad_name}</span>
+                              <span style={{ fontFamily: fonts.body, fontSize: 11, color: colors.muted }}>·</span>
+                              <span style={{ fontFamily: fonts.body, fontSize: 11, color: colors.muted }}>{timeAgo(n.created_at)}</span>
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+
+                      {unread.length > 0 && read.length > 0 && (
+                        <div style={{
+                          padding: '5px 16px',
+                          background: colors.lightBg,
+                          fontFamily: fonts.body, fontSize: 10, fontWeight: 700,
+                          textTransform: 'uppercase', letterSpacing: '0.6px', color: colors.muted,
+                        }}>
+                          Read
+                        </div>
+                      )}
+
+                      {read.map((n, i) => (
+                        <div
+                          key={n.id}
+                          onClick={() => handleNotifClick(n)}
+                          style={{
+                            display: 'flex', alignItems: 'flex-start', gap: 12,
+                            padding: '12px 16px',
+                            borderBottom: i < read.length - 1 ? `1px solid ${colors.border}` : 'none',
+                            cursor: 'pointer',
+                            background: colors.white,
+                            borderLeft: '3px solid transparent',
+                            transition: 'background 0.12s',
+                          }}
+                          onMouseEnter={e => e.currentTarget.style.background = colors.lightBg}
+                          onMouseLeave={e => e.currentTarget.style.background = colors.white}
+                        >
+                          <span style={{ fontSize: 16, flexShrink: 0, lineHeight: 1.4, opacity: 0.5 }}>
+                            {NOTIF_META[n.type]?.icon || '•'}
+                          </span>
+                          <div style={{ flex: 1, minWidth: 0 }}>
+                            <div style={{ fontFamily: fonts.body, fontSize: 13, color: colors.muted, lineHeight: 1.45 }}>
+                              {n.body}
+                            </div>
+                            <div style={{ display: 'flex', gap: 8, marginTop: 3 }}>
+                              <span style={{ fontFamily: fonts.body, fontSize: 11, color: colors.muted }}>{n.squad_name}</span>
+                              <span style={{ fontFamily: fonts.body, fontSize: 11, color: colors.muted }}>·</span>
+                              <span style={{ fontFamily: fonts.body, fontSize: 11, color: colors.muted }}>{timeAgo(n.created_at)}</span>
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </>
+                  )}
+                </div>
+              )}
+            </div>
+          );
+        })()}
+
         {/* Create form */}
         {creating && (
           <div style={{ ...card, padding: '24px 28px', marginBottom: 24 }}>
@@ -896,9 +1268,17 @@ export default function SquadPage({ navigateTo }) {
           <div>
             {/* Squad header */}
             <div style={{ marginBottom: 24 }}>
-              <h1 style={{ fontFamily: fonts.pixel, fontSize: 12, color: colors.text, margin: '0 0 16px', lineHeight: 1.6 }}>
-                {currentSquad.name}
-              </h1>
+              <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12, marginBottom: 16 }}>
+                <h1 style={{ fontFamily: fonts.pixel, fontSize: 12, color: colors.text, margin: 0, lineHeight: 1.6 }}>
+                  {currentSquad.name}
+                </h1>
+                <button
+                  onClick={() => setShowSettings(s => !s)}
+                  style={{ ...button.ghost, fontSize: 12, padding: '5px 12px', whiteSpace: 'nowrap', flexShrink: 0 }}
+                >
+                  {showSettings ? '✕ Close Settings' : '⚙ Squad Settings'}
+                </button>
+              </div>
               <div style={{ display: 'flex', alignItems: 'center', gap: 0, flexWrap: 'wrap' }}>
                 {currentSquad.members.map((m, i) => (
                   <div
@@ -956,6 +1336,49 @@ export default function SquadPage({ navigateTo }) {
                   >
                     Cancel
                   </button>
+                </div>
+              )}
+
+              {/* Inline Settings Panel */}
+              {showSettings && (
+                <div style={{ ...card, padding: '18px 22px', marginTop: 16, background: colors.lightBg }}>
+                  <div style={{ fontFamily: fonts.body, fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.8px', color: colors.muted, marginBottom: 14 }}>
+                    Notifications
+                  </div>
+                  {[
+                    { key: 'poll_created',          label: 'When a poll is created' },
+                    { key: 'poll_closing_soon',      label: 'When a poll is 1 hour from closing' },
+                    { key: 'game_night_scheduled',   label: 'When a game night has been scheduled' },
+                    { key: 'thread_created',         label: 'When a thread is created' },
+                    { key: 'mentioned_in_thread',    label: "When I'm mentioned in a thread" },
+                    { key: 'replied_in_thread',      label: "When someone replies to a thread I've commented in" },
+                  ].map(({ key, label }, idx, arr) => (
+                    <div
+                      key={key}
+                      style={{
+                        display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16,
+                        padding: '10px 0',
+                        borderBottom: idx < arr.length - 1 ? `1px solid ${colors.border}` : 'none',
+                      }}
+                    >
+                      <span style={{ fontFamily: fonts.body, fontSize: 14, color: colors.text }}>{label}</span>
+                      <div
+                        onClick={() => saveNotifPref(key, !notifPrefs[key])}
+                        style={{
+                          width: 38, height: 22, borderRadius: 11, cursor: 'pointer', flexShrink: 0,
+                          background: notifPrefs[key] ? colors.navy : colors.border,
+                          position: 'relative', transition: 'background 0.2s',
+                        }}
+                      >
+                        <div style={{
+                          position: 'absolute', top: 3,
+                          left: notifPrefs[key] ? 19 : 3,
+                          width: 16, height: 16, borderRadius: '50%', background: colors.white,
+                          transition: 'left 0.2s', boxShadow: '0 1px 3px rgba(0,0,0,0.2)',
+                        }} />
+                      </div>
+                    </div>
+                  ))}
                 </div>
               )}
             </div>
@@ -1065,7 +1488,7 @@ export default function SquadPage({ navigateTo }) {
                 </div>
 
                 {/* Polls */}
-                <div style={{ ...card, padding: '18px 22px', marginBottom: 20 }}>
+                <div id="section-polls" style={{ ...card, padding: '18px 22px', marginBottom: 20 }}>
                   <h2 style={{ fontFamily: fonts.pixel, fontSize: 10, color: colors.text, margin: '0 0 16px' }}>
                     Polls
                   </h2>
@@ -1085,7 +1508,7 @@ export default function SquadPage({ navigateTo }) {
                 </div>
 
                 {/* Next Meetup */}
-                <div style={{ ...card, padding: '18px 22px', marginBottom: 20 }}>
+                <div id="section-meetup" style={{ ...card, padding: '18px 22px', marginBottom: 20 }}>
                   <h2 style={{ fontFamily: fonts.pixel, fontSize: 10, color: colors.text, margin: '0 0 16px' }}>
                     Next Game Night
                   </h2>
@@ -1124,7 +1547,7 @@ export default function SquadPage({ navigateTo }) {
                 </div>
 
                 {/* Threads */}
-                <div style={{ ...card, padding: '18px 22px' }}>
+                <div id="section-threads" style={{ ...card, padding: '18px 22px' }}>
                   <h2 style={{ fontFamily: fonts.pixel, fontSize: 10, color: colors.text, margin: '0 0 16px' }}>
                     Threads
                   </h2>
