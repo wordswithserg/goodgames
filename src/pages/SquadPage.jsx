@@ -1062,7 +1062,7 @@ export default function SquadPage({ navigateTo }) {
               {/* Bell trigger row */}
               <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: notifsOpen ? 10 : 0 }}>
                 <button
-                  onClick={() => setNotifsOpen(o => !o)}
+                  onClick={() => { if (notifsOpen) { setNotifsOpen(false); } else { loadNotifications(); setNotifsOpen(true); } }}
                   style={{
                     position: 'relative', background: 'none', border: 'none',
                     cursor: 'pointer', padding: 4, color: colors.navy,
