@@ -566,6 +566,103 @@ function MemberSearchInput({ selected, onAdd, onRemove, excludeUsernames = [], p
   );
 }
 
+function SquadSearchBar({ onSelect }) {
+  const [query, setQuery] = useState('');
+  const [results, setResults] = useState([]);
+  const [searching, setSearching] = useState(false);
+  const [open, setOpen] = useState(false);
+
+  useEffect(() => {
+    if (!query.trim()) { setResults([]); setOpen(false); setSearching(false); return; }
+    setSearching(true);
+    const t = setTimeout(async () => {
+      const { data: squadRows } = await supabase
+        .from('squads')
+        .select('id, name')
+        .ilike('name', `%${query.trim()}%`)
+        .limit(10);
+
+      if (!squadRows?.length) {
+        setResults([]); setOpen(true); setSearching(false); return;
+      }
+
+      const squadIds = squadRows.map(s => s.id);
+      const { data: memberRows } = await supabase
+        .from('squad_members')
+        .select('squad_id')
+        .in('squad_id', squadIds);
+
+      const countMap = {};
+      (memberRows || []).forEach(r => { countMap[r.squad_id] = (countMap[r.squad_id] || 0) + 1; });
+
+      setResults(squadRows.map(s => ({ ...s, memberCount: countMap[s.id] || 0 })));
+      setOpen(true);
+      setSearching(false);
+    }, 300);
+    return () => clearTimeout(t);
+  }, [query]); // eslint-disable-line
+
+  function pick(squad) {
+    onSelect(squad.id);
+    setQuery('');
+    setResults([]);
+    setOpen(false);
+  }
+
+  return (
+    <div style={{ position: 'relative', marginBottom: 14 }}>
+      <input
+        type="text"
+        placeholder="Search all squads…"
+        value={query}
+        onChange={e => setQuery(e.target.value)}
+        onFocus={() => results.length > 0 && setOpen(true)}
+        onBlur={() => setTimeout(() => setOpen(false), 150)}
+        style={{ ...input.base, fontSize: 13 }}
+      />
+      {open && query.trim() && (
+        <div style={{
+          position: 'absolute', top: '100%', left: 0, right: 0, zIndex: 200,
+          background: colors.white, border: `1px solid ${colors.border}`,
+          borderRadius: 6, boxShadow: '0 4px 12px rgba(0,0,0,0.1)',
+          marginTop: 2, maxHeight: 220, overflowY: 'auto',
+        }}>
+          {searching && (
+            <div style={{ padding: '10px 14px', fontFamily: fonts.body, fontSize: 13, color: colors.muted }}>
+              Searching…
+            </div>
+          )}
+          {!searching && results.length === 0 && (
+            <div style={{ padding: '10px 14px', fontFamily: fonts.body, fontSize: 13, color: colors.muted }}>
+              No squads found
+            </div>
+          )}
+          {!searching && results.map((s, i) => (
+            <div
+              key={s.id}
+              onMouseDown={() => pick(s)}
+              style={{
+                padding: '9px 14px', cursor: 'pointer',
+                borderBottom: i < results.length - 1 ? `1px solid ${colors.border}` : 'none',
+                display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8,
+              }}
+              onMouseEnter={e => e.currentTarget.style.background = colors.lightBg}
+              onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
+            >
+              <span style={{ fontFamily: fonts.body, fontSize: 14, fontWeight: 600, color: colors.text }}>
+                {s.name}
+              </span>
+              <span style={{ fontFamily: fonts.body, fontSize: 12, color: colors.muted, flexShrink: 0 }}>
+                {s.memberCount} member{s.memberCount !== 1 ? 's' : ''}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function SquadPage({ navigateTo }) {
   const { user, profile, loading, isLoggedIn } = useAuth();
   const currentUser = profile?.username || null;
@@ -1127,6 +1224,7 @@ export default function SquadPage({ navigateTo }) {
     <div style={{ maxWidth: 960, margin: '0 auto', padding: '32px 24px', display: 'flex', gap: 24, alignItems: 'flex-start' }}>
       {/* Sidebar */}
       <div style={{ width: 220, flexShrink: 0 }}>
+        <SquadSearchBar onSelect={id => { setActiveSquadId(id); setCreating(false); }} />
         <div style={{
           fontFamily: fonts.body,
           fontSize: 11,
