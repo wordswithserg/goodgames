@@ -1,5 +1,37 @@
 // SQL MIGRATIONS — run once in Supabase SQL editor:
 //
+// -- Membership request additions
+// alter table membership_requests add column if not exists direction text not null default 'request';
+// alter table membership_requests add column if not exists invited_by uuid references auth.users(id);
+// alter table membership_requests add column if not exists message text;
+//
+// -- Notification action link
+// alter table notifications add column if not exists action_type text;
+// alter table notifications add column if not exists action_id uuid;
+//
+// -- Replace the old broad policy with targeted ones
+// drop policy if exists "admins manage requests" on membership_requests;
+//
+// create policy "users can see own requests" on membership_requests
+//   for select using (auth.uid() = user_id or exists (
+//     select 1 from squad_members
+//     where squad_members.squad_id = membership_requests.squad_id
+//     and squad_members.user_id = auth.uid()
+//     and squad_members.role = 'admin'
+//   ));
+// create policy "users can insert own requests" on membership_requests
+//   for insert with check (auth.uid() = user_id);
+// create policy "admins can update requests" on membership_requests
+//   for update using (
+//     auth.uid() = user_id or exists (
+//       select 1 from squad_members
+//       where squad_members.squad_id = membership_requests.squad_id
+//       and squad_members.user_id = auth.uid()
+//       and squad_members.role = 'admin'
+//     )
+//   );
+// grant select, insert, update on membership_requests to authenticated;
+//
 // -- Admin roles
 // alter table squad_members add column if not exists role text not null default 'member';
 // update squad_members set role = 'admin' where user_id = (
@@ -98,6 +130,11 @@ const NOTIF_META = {
   thread_archived:       { icon: '🗄',  sectionId: 'section-threads' },
   replied_in_thread:     { icon: '↩',  sectionId: 'section-threads' },
   mentioned_in_thread:   { icon: '@',  sectionId: 'section-threads' },
+  squad_invite:          { icon: '✉',  sectionId: null },
+  join_request:          { icon: '👋', sectionId: null },
+  invite_accepted:       { icon: '✓',  sectionId: null },
+  request_approved:      { icon: '✓',  sectionId: null },
+  request_denied:        { icon: '✕',  sectionId: null },
 };
 
 function MemberAvatar({ name, size = 32, isYou = false }) {
@@ -566,11 +603,107 @@ function MemberSearchInput({ selected, onAdd, onRemove, excludeUsernames = [], p
   );
 }
 
-function SquadSearchBar({ onSelect }) {
+function InviteForm({ squadMembers, onSendInvite }) {
   const [query, setQuery] = useState('');
   const [results, setResults] = useState([]);
   const [searching, setSearching] = useState(false);
   const [open, setOpen] = useState(false);
+  const [selected, setSelected] = useState(null);
+  const [status, setStatus] = useState(null); // null | 'sending' | {error} | {success}
+
+  useEffect(() => {
+    if (!query.trim()) { setResults([]); setOpen(false); setSearching(false); return; }
+    const memberIds = new Set(squadMembers.map(m => m.user_id));
+    setSearching(true);
+    const t = setTimeout(async () => {
+      const { data } = await supabase
+        .from('profiles')
+        .select('id, username')
+        .ilike('username', `${query.trim()}%`)
+        .limit(6);
+      setResults((data || []).filter(u => !memberIds.has(u.id)));
+      setOpen(true);
+      setSearching(false);
+    }, 300);
+    return () => clearTimeout(t);
+  }, [query]); // eslint-disable-line
+
+  async function sendInvite() {
+    if (!selected) return;
+    setStatus('sending');
+    const result = await onSendInvite(selected.id, selected.username);
+    if (result.error) {
+      setStatus({ error: result.error });
+    } else {
+      setStatus({ success: true });
+      setSelected(null);
+      setQuery('');
+      setTimeout(() => setStatus(null), 2500);
+    }
+  }
+
+  return (
+    <div style={{ marginTop: 12, paddingTop: 10, borderTop: `1px solid ${colors.border}` }}>
+      <div style={{ fontFamily: fonts.body, fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.6px', color: colors.muted, marginBottom: 8 }}>
+        Invite a player
+      </div>
+      <div style={{ position: 'relative' }}>
+        <input
+          type="text"
+          placeholder="Search by username…"
+          value={query}
+          onChange={e => { setQuery(e.target.value); setSelected(null); setStatus(null); }}
+          onFocus={() => results.length > 0 && setOpen(true)}
+          onBlur={() => setTimeout(() => setOpen(false), 150)}
+          style={{ ...input.base, fontSize: 13 }}
+        />
+        {open && query.trim() && (
+          <div style={{
+            position: 'absolute', top: '100%', left: 0, right: 0, zIndex: 300,
+            background: colors.white, border: `1px solid ${colors.border}`,
+            borderRadius: 6, boxShadow: '0 4px 12px rgba(0,0,0,0.1)', marginTop: 2,
+          }}>
+            {searching && <div style={{ padding: '10px 14px', fontFamily: fonts.body, fontSize: 13, color: colors.muted }}>Searching…</div>}
+            {!searching && results.length === 0 && <div style={{ padding: '10px 14px', fontFamily: fonts.body, fontSize: 13, color: colors.muted }}>No users found</div>}
+            {!searching && results.map(u => (
+              <div
+                key={u.id}
+                onMouseDown={() => { setSelected(u); setQuery(u.username); setOpen(false); }}
+                style={{ padding: '9px 14px', cursor: 'pointer', fontFamily: fonts.body, fontSize: 14, color: colors.text, display: 'flex', alignItems: 'center', gap: 8 }}
+                onMouseEnter={e => e.currentTarget.style.background = colors.lightBg}
+                onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
+              >
+                <MemberAvatar name={u.username} size={22} />
+                {u.username}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+      {selected && (
+        <div style={{ display: 'flex', gap: 8, marginTop: 8, alignItems: 'center' }}>
+          <button
+            onClick={sendInvite}
+            disabled={status === 'sending'}
+            style={{ ...button.secondary, fontSize: 12, padding: '5px 12px', opacity: status === 'sending' ? 0.6 : 1, cursor: status === 'sending' ? 'not-allowed' : 'pointer' }}
+          >
+            {status === 'sending' ? 'Sending…' : `Send invite`}
+          </button>
+          {status?.error && <span style={{ fontFamily: fonts.body, fontSize: 12, color: '#C0392B' }}>{status.error}</span>}
+          {status?.success && <span style={{ fontFamily: fonts.body, fontSize: 12, color: '#2D7A4F' }}>Invite sent!</span>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SquadSearchBar({ onSelect, userSquadIds = [], userId, onRequestToJoin }) {
+  const [query, setQuery] = useState('');
+  const [results, setResults] = useState([]);
+  const [searching, setSearching] = useState(false);
+  const [open, setOpen] = useState(false);
+  const [pendingSquadIds, setPendingSquadIds] = useState(new Set());
+  const [justRequested, setJustRequested] = useState(new Set());
 
   useEffect(() => {
     if (!query.trim()) { setResults([]); setOpen(false); setSearching(false); return; }
@@ -587,13 +720,17 @@ function SquadSearchBar({ onSelect }) {
       }
 
       const squadIds = squadRows.map(s => s.id);
-      const { data: memberRows } = await supabase
-        .from('squad_members')
-        .select('squad_id')
-        .in('squad_id', squadIds);
+      const [{ data: memberRows }, { data: pendingRows }] = await Promise.all([
+        supabase.from('squad_members').select('squad_id').in('squad_id', squadIds),
+        userId
+          ? supabase.from('membership_requests').select('squad_id')
+              .eq('user_id', userId).eq('status', 'pending').in('squad_id', squadIds)
+          : Promise.resolve({ data: [] }),
+      ]);
 
       const countMap = {};
       (memberRows || []).forEach(r => { countMap[r.squad_id] = (countMap[r.squad_id] || 0) + 1; });
+      setPendingSquadIds(new Set((pendingRows || []).map(r => r.squad_id)));
 
       setResults(squadRows.map(s => ({ ...s, memberCount: countMap[s.id] || 0 })));
       setOpen(true);
@@ -607,6 +744,15 @@ function SquadSearchBar({ onSelect }) {
     setQuery('');
     setResults([]);
     setOpen(false);
+  }
+
+  async function handleRequest(e, squad) {
+    e.stopPropagation();
+    setJustRequested(prev => new Set([...prev, squad.id]));
+    const result = await onRequestToJoin(squad.id, squad.name);
+    if (result?.error) {
+      setJustRequested(prev => { const n = new Set(prev); n.delete(squad.id); return n; });
+    }
   }
 
   return (
@@ -625,7 +771,7 @@ function SquadSearchBar({ onSelect }) {
           position: 'absolute', top: '100%', left: 0, right: 0, zIndex: 200,
           background: colors.white, border: `1px solid ${colors.border}`,
           borderRadius: 6, boxShadow: '0 4px 12px rgba(0,0,0,0.1)',
-          marginTop: 2, maxHeight: 220, overflowY: 'auto',
+          marginTop: 2, maxHeight: 260, overflowY: 'auto',
         }}>
           {searching && (
             <div style={{ padding: '10px 14px', fontFamily: fonts.body, fontSize: 13, color: colors.muted }}>
@@ -637,26 +783,49 @@ function SquadSearchBar({ onSelect }) {
               No squads found
             </div>
           )}
-          {!searching && results.map((s, i) => (
-            <div
-              key={s.id}
-              onMouseDown={() => pick(s)}
-              style={{
-                padding: '9px 14px', cursor: 'pointer',
-                borderBottom: i < results.length - 1 ? `1px solid ${colors.border}` : 'none',
-                display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8,
-              }}
-              onMouseEnter={e => e.currentTarget.style.background = colors.lightBg}
-              onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
-            >
-              <span style={{ fontFamily: fonts.body, fontSize: 14, fontWeight: 600, color: colors.text }}>
-                {s.name}
-              </span>
-              <span style={{ fontFamily: fonts.body, fontSize: 12, color: colors.muted, flexShrink: 0 }}>
-                {s.memberCount} member{s.memberCount !== 1 ? 's' : ''}
-              </span>
-            </div>
-          ))}
+          {!searching && results.map((s, i) => {
+            const isMember = userSquadIds.includes(s.id);
+            const isPending = pendingSquadIds.has(s.id) || justRequested.has(s.id);
+            return (
+              <div
+                key={s.id}
+                onMouseDown={() => !isMember && pick(s)}
+                style={{
+                  padding: '9px 14px',
+                  cursor: isMember ? 'default' : 'pointer',
+                  borderBottom: i < results.length - 1 ? `1px solid ${colors.border}` : 'none',
+                  display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8,
+                }}
+                onMouseEnter={e => { if (!isMember) e.currentTarget.style.background = colors.lightBg; }}
+                onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
+              >
+                <div>
+                  <div style={{ fontFamily: fonts.body, fontSize: 14, fontWeight: 600, color: colors.text }}>
+                    {s.name}
+                  </div>
+                  <div style={{ fontFamily: fonts.body, fontSize: 11, color: colors.muted }}>
+                    {s.memberCount} member{s.memberCount !== 1 ? 's' : ''}
+                  </div>
+                </div>
+                {isMember ? (
+                  <span style={{ fontFamily: fonts.body, fontSize: 11, color: colors.muted, flexShrink: 0 }}>
+                    Already a member
+                  </span>
+                ) : isPending ? (
+                  <span style={{ fontFamily: fonts.body, fontSize: 11, color: colors.muted, fontStyle: 'italic', flexShrink: 0 }}>
+                    Request sent
+                  </span>
+                ) : onRequestToJoin ? (
+                  <button
+                    onMouseDown={e => handleRequest(e, s)}
+                    style={{ ...button.ghost, fontSize: 11, padding: '4px 10px', whiteSpace: 'nowrap', flexShrink: 0 }}
+                  >
+                    Request to join
+                  </button>
+                ) : null}
+              </div>
+            );
+          })}
         </div>
       )}
     </div>
@@ -900,7 +1069,7 @@ export default function SquadPage({ navigateTo }) {
     setNotifsLoading(true);
     const { data: rows } = await supabase
       .from('notifications')
-      .select('id, squad_id, type, body, read, created_at')
+      .select('id, squad_id, type, body, read, created_at, action_type, action_id')
       .eq('user_id', user.id)
       .order('created_at', { ascending: false })
       .limit(30);
@@ -912,7 +1081,23 @@ export default function SquadPage({ navigateTo }) {
       .from('squads').select('id, name').in('id', squadIds);
     const squadNameMap = Object.fromEntries((squadRows || []).map(s => [s.id, s.name]));
 
-    setNotifications(rows.map(r => ({ ...r, squad_name: squadNameMap[r.squad_id] || 'Unknown squad' })));
+    const requestIds = rows
+      .filter(r => r.action_type === 'membership_request' && r.action_id)
+      .map(r => r.action_id);
+    let requestMap = {};
+    if (requestIds.length) {
+      const { data: reqRows } = await supabase
+        .from('membership_requests')
+        .select('id, status, direction, user_id, invited_by, squad_id')
+        .in('id', requestIds);
+      requestMap = Object.fromEntries((reqRows || []).map(r => [r.id, r]));
+    }
+
+    setNotifications(rows.map(r => ({
+      ...r,
+      squad_name: squadNameMap[r.squad_id] || 'Unknown squad',
+      request: r.action_id ? (requestMap[r.action_id] || null) : null,
+    })));
     setNotifsLoading(false);
   }
 
@@ -977,13 +1162,13 @@ export default function SquadPage({ navigateTo }) {
     });
   }
 
-  async function insertNotifications(userIds, squadId, type, body) {
+  async function insertNotifications(userIds, squadId, type, body, extra = {}) {
     if (!userIds.length) {
       console.warn('[notifications] insertNotifications: no recipients for type', type);
       return;
     }
     const { error } = await supabase.from('notifications').insert(
-      userIds.map(userId => ({ user_id: userId, squad_id: squadId, type, body }))
+      userIds.map(userId => ({ user_id: userId, squad_id: squadId, type, body, ...extra }))
     );
     if (error) console.error('[notifications] insert error:', error);
     else console.log('[notifications] inserted', userIds.length, 'notification(s) of type', type);
@@ -1214,6 +1399,124 @@ export default function SquadPage({ navigateTo }) {
     await supabase.from('squads').update({ [field]: value }).eq('id', resolvedId);
   }
 
+  async function sendInvite(inviteeId, inviteeUsername) {
+    if (currentSquad?.members.some(m => m.user_id === inviteeId)) {
+      return { error: 'Already a member of this squad' };
+    }
+    const { data: existing } = await supabase
+      .from('membership_requests')
+      .select('id')
+      .eq('squad_id', resolvedId)
+      .eq('user_id', inviteeId)
+      .eq('status', 'pending')
+      .maybeSingle();
+    if (existing) return { error: 'Already invited' };
+
+    const { data: req, error } = await supabase
+      .from('membership_requests')
+      .insert({ squad_id: resolvedId, user_id: inviteeId, direction: 'invite', invited_by: user.id, status: 'pending' })
+      .select('id')
+      .single();
+    if (error) return { error: 'Failed to send invite' };
+
+    await insertNotifications(
+      [inviteeId], resolvedId, 'squad_invite',
+      `${currentUser} invited you to join ${currentSquad.name}`,
+      { action_type: 'membership_request', action_id: req.id }
+    );
+    return { success: true };
+  }
+
+  async function requestToJoin(squadId, squadName) {
+    const { data: req, error } = await supabase
+      .from('membership_requests')
+      .insert({ squad_id: squadId, user_id: user.id, direction: 'request', status: 'pending' })
+      .select('id')
+      .single();
+    if (error) return { error: 'Failed to send request' };
+
+    const { data: adminRows } = await supabase
+      .from('squad_members')
+      .select('user_id')
+      .eq('squad_id', squadId)
+      .eq('role', 'admin');
+    const adminIds = (adminRows || []).map(r => r.user_id);
+    if (adminIds.length) {
+      await insertNotifications(
+        adminIds, squadId, 'join_request',
+        `${currentUser} has requested to join ${squadName}`,
+        { action_type: 'membership_request', action_id: req.id }
+      );
+    }
+    return { success: true };
+  }
+
+  async function acceptInvite(notif) {
+    setNotifications(prev => prev.map(n =>
+      n.id === notif.id ? { ...n, read: true, request: { ...n.request, status: 'accepted' } } : n
+    ));
+    await Promise.all([
+      supabase.from('membership_requests').update({ status: 'accepted' }).eq('id', notif.action_id),
+      supabase.from('squad_members').insert({ squad_id: notif.squad_id, user_id: user.id, role: 'member' }),
+      supabase.from('notifications').update({ read: true }).eq('id', notif.id),
+    ]);
+    if (notif.request?.invited_by) {
+      await insertNotifications(
+        [notif.request.invited_by], notif.squad_id, 'invite_accepted',
+        `${currentUser} accepted your invite to join ${notif.squad_name}`
+      );
+    }
+    await loadSquads();
+  }
+
+  async function denyInvite(notif) {
+    setNotifications(prev => prev.map(n =>
+      n.id === notif.id ? { ...n, read: true, request: { ...n.request, status: 'denied' } } : n
+    ));
+    await Promise.all([
+      supabase.from('membership_requests').update({ status: 'denied' }).eq('id', notif.action_id),
+      supabase.from('notifications').update({ read: true }).eq('id', notif.id),
+    ]);
+  }
+
+  async function approveJoinRequest(notif) {
+    const requesterId = notif.request?.user_id;
+    setNotifications(prev => prev.map(n =>
+      n.action_id === notif.action_id
+        ? { ...n, read: true, request: { ...n.request, status: 'accepted' } }
+        : n
+    ));
+    await Promise.all([
+      supabase.from('membership_requests').update({ status: 'accepted' }).eq('id', notif.action_id),
+      requesterId ? supabase.from('squad_members').insert({ squad_id: notif.squad_id, user_id: requesterId, role: 'member' }) : Promise.resolve(),
+      supabase.from('notifications').update({ read: true }).eq('action_id', notif.action_id),
+    ]);
+    if (requesterId) {
+      await insertNotifications(
+        [requesterId], notif.squad_id, 'request_approved',
+        `Your request to join ${notif.squad_name} was approved`
+      );
+    }
+    await loadSquads();
+  }
+
+  async function denyJoinRequest(notif) {
+    const requesterId = notif.request?.user_id;
+    setNotifications(prev => prev.map(n =>
+      n.id === notif.id ? { ...n, read: true, request: { ...n.request, status: 'denied' } } : n
+    ));
+    await Promise.all([
+      supabase.from('membership_requests').update({ status: 'denied' }).eq('id', notif.action_id),
+      supabase.from('notifications').update({ read: true }).eq('id', notif.id),
+    ]);
+    if (requesterId) {
+      await insertNotifications(
+        [requesterId], notif.squad_id, 'request_denied',
+        `Your request to join ${notif.squad_name} was denied`
+      );
+    }
+  }
+
   // ── render ────────────────────────────────────────────────────────────────
 
   if (loading) return null;
@@ -1224,7 +1527,12 @@ export default function SquadPage({ navigateTo }) {
     <div style={{ maxWidth: 960, margin: '0 auto', padding: '32px 24px', display: 'flex', gap: 24, alignItems: 'flex-start' }}>
       {/* Sidebar */}
       <div style={{ width: 220, flexShrink: 0 }}>
-        <SquadSearchBar onSelect={id => { setActiveSquadId(id); setCreating(false); }} />
+        <SquadSearchBar
+          onSelect={id => { setActiveSquadId(id); setCreating(false); }}
+          userSquadIds={squads.map(s => s.id)}
+          userId={user?.id}
+          onRequestToJoin={requestToJoin}
+        />
         <div style={{
           fontFamily: fonts.body,
           fontSize: 11,
@@ -1345,17 +1653,17 @@ export default function SquadPage({ navigateTo }) {
                       {unread.map((n, i) => (
                         <div
                           key={n.id}
-                          onClick={() => handleNotifClick(n)}
+                          onClick={() => n.action_type !== 'membership_request' && handleNotifClick(n)}
                           style={{
                             display: 'flex', alignItems: 'flex-start', gap: 12,
                             padding: '12px 16px',
                             borderBottom: i < unread.length - 1 || read.length > 0 ? `1px solid ${colors.border}` : 'none',
-                            cursor: 'pointer',
+                            cursor: n.action_type === 'membership_request' ? 'default' : 'pointer',
                             background: '#FFF8F3',
                             borderLeft: `3px solid ${squadAccentColor || colors.orange}`,
                             transition: 'background 0.12s',
                           }}
-                          onMouseEnter={e => e.currentTarget.style.background = '#FFF0E6'}
+                          onMouseEnter={e => { if (n.action_type !== 'membership_request') e.currentTarget.style.background = '#FFF0E6'; }}
                           onMouseLeave={e => e.currentTarget.style.background = '#FFF8F3'}
                         >
                           <span style={{ fontSize: 16, flexShrink: 0, lineHeight: 1.4 }}>
@@ -1370,6 +1678,24 @@ export default function SquadPage({ navigateTo }) {
                               <span style={{ fontFamily: fonts.body, fontSize: 11, color: colors.muted }}>·</span>
                               <span style={{ fontFamily: fonts.body, fontSize: 11, color: colors.muted }}>{timeAgo(n.created_at)}</span>
                             </div>
+                            {n.action_type === 'membership_request' && n.request && (() => {
+                              const { status } = n.request;
+                              if (status === 'pending' && n.type === 'squad_invite') return (
+                                <div style={{ display: 'flex', gap: 6, marginTop: 8 }}>
+                                  <button onMouseDown={() => acceptInvite(n)} style={{ ...button.secondary, fontSize: 11, padding: '4px 10px' }}>Accept</button>
+                                  <button onMouseDown={() => denyInvite(n)} style={{ ...button.ghost, fontSize: 11, padding: '4px 10px', color: colors.muted, borderColor: colors.border }}>Decline</button>
+                                </div>
+                              );
+                              if (status === 'pending' && n.type === 'join_request') return (
+                                <div style={{ display: 'flex', gap: 6, marginTop: 8 }}>
+                                  <button onMouseDown={() => approveJoinRequest(n)} style={{ ...button.secondary, fontSize: 11, padding: '4px 10px' }}>Approve</button>
+                                  <button onMouseDown={() => denyJoinRequest(n)} style={{ ...button.ghost, fontSize: 11, padding: '4px 10px', color: colors.muted, borderColor: colors.border }}>Deny</button>
+                                </div>
+                              );
+                              if (status === 'accepted') return <div style={{ fontFamily: fonts.body, fontSize: 11, color: '#2D7A4F', marginTop: 6, fontWeight: 600 }}>{n.type === 'squad_invite' ? '✓ Joined' : '✓ Approved'}</div>;
+                              if (status === 'denied') return <div style={{ fontFamily: fonts.body, fontSize: 11, color: colors.muted, marginTop: 6 }}>{n.type === 'squad_invite' ? 'Declined' : 'Denied'}</div>;
+                              return null;
+                            })()}
                           </div>
                         </div>
                       ))}
@@ -1388,17 +1714,17 @@ export default function SquadPage({ navigateTo }) {
                       {read.map((n, i) => (
                         <div
                           key={n.id}
-                          onClick={() => handleNotifClick(n)}
+                          onClick={() => n.action_type !== 'membership_request' && handleNotifClick(n)}
                           style={{
                             display: 'flex', alignItems: 'flex-start', gap: 12,
                             padding: '12px 16px',
                             borderBottom: i < read.length - 1 ? `1px solid ${colors.border}` : 'none',
-                            cursor: 'pointer',
+                            cursor: n.action_type === 'membership_request' ? 'default' : 'pointer',
                             background: colors.white,
                             borderLeft: '3px solid transparent',
                             transition: 'background 0.12s',
                           }}
-                          onMouseEnter={e => e.currentTarget.style.background = colors.lightBg}
+                          onMouseEnter={e => { if (n.action_type !== 'membership_request') e.currentTarget.style.background = colors.lightBg; }}
                           onMouseLeave={e => e.currentTarget.style.background = colors.white}
                         >
                           <span style={{ fontSize: 16, flexShrink: 0, lineHeight: 1.4, opacity: 0.5 }}>
@@ -1413,6 +1739,12 @@ export default function SquadPage({ navigateTo }) {
                               <span style={{ fontFamily: fonts.body, fontSize: 11, color: colors.muted }}>·</span>
                               <span style={{ fontFamily: fonts.body, fontSize: 11, color: colors.muted }}>{timeAgo(n.created_at)}</span>
                             </div>
+                            {n.action_type === 'membership_request' && n.request && (() => {
+                              const { status } = n.request;
+                              if (status === 'accepted') return <div style={{ fontFamily: fonts.body, fontSize: 11, color: '#2D7A4F', marginTop: 6, fontWeight: 600 }}>{n.type === 'squad_invite' ? '✓ Joined' : '✓ Approved'}</div>;
+                              if (status === 'denied') return <div style={{ fontFamily: fonts.body, fontSize: 11, color: colors.muted, marginTop: 6 }}>{n.type === 'squad_invite' ? 'Declined' : 'Denied'}</div>;
+                              return null;
+                            })()}
                           </div>
                         </div>
                       ))}
@@ -1607,14 +1939,10 @@ export default function SquadPage({ navigateTo }) {
                           )}
                         </div>
                       ))}
-                      {/* TODO: Membership requests — approve/deny flow
-                          Query: SELECT * FROM membership_requests WHERE squad_id = resolvedId AND status = 'pending'
-                          Approve: update status='approved', insert into squad_members with role='member'
-                          Deny: update status='denied'
-                          Show pending count as a badge next to "Membership requests" label */}
-                      <div style={{ padding: '8px 0', fontFamily: fonts.body, fontSize: 13, color: colors.muted, fontStyle: 'italic' }}>
-                        Membership requests — coming soon
-                      </div>
+                      <InviteForm
+                        squadMembers={currentSquad.members}
+                        onSendInvite={sendInvite}
+                      />
                       <div style={{ height: 1, background: colors.border, margin: '16px 0' }} />
                     </>
                   )}
