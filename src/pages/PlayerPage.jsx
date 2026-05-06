@@ -1,5 +1,6 @@
-// SQL MIGRATION — run once in the Supabase SQL editor:
+// SQL MIGRATIONS — run once in the Supabase SQL editor:
 // ALTER TABLE profiles ADD COLUMN IF NOT EXISTS avatar_url text;
+// ALTER TABLE profiles ADD COLUMN IF NOT EXISTS profile_color text;
 
 import { useState, useEffect, useRef } from 'react';
 import { colors, fonts, card, button, input } from '../styles/theme';
@@ -9,6 +10,14 @@ import { useAuth } from '../contexts/AuthContext';
 import { supabase } from '../lib/supabase';
 import RequireAuth from '../components/auth/RequireAuth';
 import { getGameById as getIgdbGame, searchGames, fetchIgdbGenres } from '../lib/igdb';
+
+function contrastFor(hex) {
+  if (!hex) return '#1A1A1A';
+  const r = parseInt(hex.slice(1, 3), 16);
+  const g = parseInt(hex.slice(3, 5), 16);
+  const b = parseInt(hex.slice(5, 7), 16);
+  return 0.299 * r + 0.587 * g + 0.114 * b > 140 ? '#1A1A1A' : '#FFFFFF';
+}
 
 function computeCompleteness({ top10, wishlist, genreFavSlots, aboutAnswers }) {
   let score = 0;
@@ -150,6 +159,9 @@ export default function PlayerPage({ navigateTo }) {
   const [avatarUploading, setAvatarUploading] = useState(false);
   const [avatarError, setAvatarError] = useState(null);
   const avatarInputRef = useRef(null);
+
+  const [profileColor, setProfileColor] = useState(profile?.profile_color || null);
+  const profileColorInputRef = useRef(null);
 
   const [nowPlayingId, setNowPlayingId] = useState(null);
   const [nowPlayingGame, setNowPlayingGame] = useState(null);
@@ -398,6 +410,11 @@ export default function PlayerPage({ navigateTo }) {
     setAvatarUrl(profile?.avatar_url || null);
   }, [profile?.avatar_url]); // eslint-disable-line
 
+  // Sync profileColor from profile once auth resolves.
+  useEffect(() => {
+    setProfileColor(profile?.profile_color || null);
+  }, [profile?.profile_color]); // eslint-disable-line
+
   async function handleAvatarFileSelect(e) {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -428,6 +445,11 @@ export default function PlayerPage({ navigateTo }) {
     }
     setAvatarUploading(false);
     e.target.value = '';
+  }
+
+  async function saveProfileColor(color) {
+    setProfileColor(color);
+    await supabase.from('profiles').update({ profile_color: color }).eq('id', user.id);
   }
 
   // Sync nowPlayingId from profile once auth resolves (useState initializer runs before profile loads).
@@ -468,6 +490,21 @@ export default function PlayerPage({ navigateTo }) {
   }
 
   const completeness = computeCompleteness({ top10, wishlist, genreFavSlots, aboutAnswers });
+  const headerFg = contrastFor(profileColor || null);
+  const isHeaderDark = profileColor && headerFg === '#FFFFFF';
+  const headerMuted = profileColor
+    ? (isHeaderDark ? 'rgba(255,255,255,0.6)' : 'rgba(0,0,0,0.45)')
+    : colors.muted;
+  const completenessTrack = profileColor
+    ? (isHeaderDark ? 'rgba(255,255,255,0.2)' : 'rgba(0,0,0,0.12)')
+    : colors.border;
+  const headerBtnStyle = profileColor ? {
+    background: 'transparent',
+    color: headerFg,
+    border: `1px solid ${isHeaderDark ? 'rgba(255,255,255,0.45)' : 'rgba(0,0,0,0.25)'}`,
+    borderRadius: 6, padding: '7px 17px',
+    fontFamily: fonts.body, fontSize: 14, fontWeight: 600, cursor: 'pointer',
+  } : button.ghost;
 
   if (loading || dataLoading) return null;
   if (!isLoggedIn) return <RequireAuth message="Log in to view your profile." />;
@@ -480,9 +517,14 @@ export default function PlayerPage({ navigateTo }) {
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'space-between',
-        marginBottom: 28,
         flexWrap: 'wrap',
         gap: 12,
+        marginBottom: 28,
+        ...(profileColor ? {
+          background: profileColor,
+          padding: '20px 24px',
+          borderRadius: 12,
+        } : {}),
       }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
           <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4 }}>
@@ -558,26 +600,26 @@ export default function PlayerPage({ navigateTo }) {
             <h1 style={{
               fontFamily: fonts.pixel,
               fontSize: 11,
-              color: colors.text,
+              color: profileColor ? headerFg : colors.text,
               margin: 0,
               lineHeight: 1.6,
             }}>
               {currentUser}
             </h1>
-            <div style={{ fontFamily: fonts.body, fontSize: 13, color: colors.muted, marginBottom: 8 }}>
+            <div style={{ fontFamily: fonts.body, fontSize: 13, color: headerMuted, marginBottom: 8 }}>
               {top10.length} games in top 10 · {wishlist.length} wishlisted
             </div>
             {/* Completeness bar */}
             <div style={{ minWidth: 200 }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
-                <span style={{ fontFamily: fonts.body, fontSize: 11, fontWeight: 600, color: colors.muted, textTransform: 'uppercase', letterSpacing: '0.4px' }}>
+                <span style={{ fontFamily: fonts.body, fontSize: 11, fontWeight: 600, color: headerMuted, textTransform: 'uppercase', letterSpacing: '0.4px' }}>
                   Profile completeness
                 </span>
                 <span style={{ fontFamily: fonts.body, fontSize: 11, fontWeight: 700, color: completeness === 100 ? '#2D7A4F' : colors.orange }}>
                   {completeness}%
                 </span>
               </div>
-              <div style={{ height: 6, background: colors.border, borderRadius: 3, overflow: 'hidden', width: 200 }}>
+              <div style={{ height: 6, background: completenessTrack, borderRadius: 3, overflow: 'hidden', width: 200 }}>
                 <div style={{
                   height: '100%',
                   width: `${completeness}%`,
@@ -589,16 +631,51 @@ export default function PlayerPage({ navigateTo }) {
             </div>
           </div>
         </div>
-        <div style={{ display: 'flex', gap: 8 }}>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
           <button
             onClick={() => setEditMode(!editMode)}
-            style={editMode ? button.primary : button.ghost}
+            style={editMode ? button.primary : headerBtnStyle}
           >
             {editMode ? '✓ Save Profile' : 'Edit Profile'}
           </button>
+          {editMode && (
+            <>
+              <input
+                ref={profileColorInputRef}
+                type="color"
+                value={profileColor || '#1B2A4A'}
+                style={{ display: 'none' }}
+                onChange={e => saveProfileColor(e.target.value)}
+              />
+              <button
+                onClick={() => profileColorInputRef.current?.click()}
+                style={{ ...headerBtnStyle, display: 'flex', alignItems: 'center', gap: 6 }}
+              >
+                <span style={{
+                  display: 'inline-block', width: 12, height: 12, borderRadius: '50%', flexShrink: 0,
+                  background: profileColor || (isHeaderDark ? 'rgba(255,255,255,0.3)' : 'rgba(0,0,0,0.15)'),
+                  border: `1px solid ${isHeaderDark ? 'rgba(255,255,255,0.4)' : 'rgba(0,0,0,0.2)'}`,
+                }} />
+                Profile Color
+              </button>
+              {profileColor && (
+                <button
+                  onClick={() => saveProfileColor(null)}
+                  title="Remove profile color"
+                  style={{ ...headerBtnStyle, padding: '7px 11px' }}
+                >
+                  ×
+                </button>
+              )}
+            </>
+          )}
           <button
             onClick={() => signOut()}
-            style={{ ...button.ghost, color: '#C0392B', borderColor: '#C0392B' }}
+            style={{
+              ...headerBtnStyle,
+              color: isHeaderDark ? '#f87171' : '#C0392B',
+              borderColor: isHeaderDark ? 'rgba(248,113,113,0.45)' : '#C0392B',
+            }}
           >
             Sign out
           </button>
