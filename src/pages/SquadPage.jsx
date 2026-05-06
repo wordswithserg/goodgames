@@ -1,3 +1,39 @@
+// DIAGNOSTICS — run in Supabase SQL editor after sending a test invite to verify rows exist:
+// select * from notifications where type = 'squad_invite' order by created_at desc limit 5;
+// select * from membership_requests order by created_at desc limit 5;
+//
+// MEMBERSHIP_REQUESTS INSERT RLS FIX — the default insert policy only allows users to insert rows
+// where user_id = their own id. Admin invites need to insert a row where user_id = invitee's id.
+// Run this to allow admins to insert invite rows on behalf of others:
+// drop policy if exists "users can insert own requests" on membership_requests;
+// drop policy if exists "users can insert requests" on membership_requests;
+// create policy "users can insert requests" on membership_requests
+//   for insert with check (
+//     auth.uid() = user_id
+//     or exists (
+//       select 1 from squad_members
+//       where squad_members.squad_id = membership_requests.squad_id
+//         and squad_members.user_id = auth.uid()
+//         and squad_members.role = 'admin'
+//     )
+//   );
+//
+// NOTIFICATION RLS FIX — if invite notifications are not reaching the invited user, the insert policy
+// may be blocking the admin from inserting a row on behalf of another user. Run this to fix it:
+// drop policy if exists "Authenticated users insert notifications" on notifications;
+// create policy "Authenticated users insert notifications" on notifications
+//   for insert with check (true);
+//
+// DATA CLEANUP — run in Supabase SQL editor to remove members added without going through the invite flow:
+// delete from squad_members
+// where squad_id = 'your-squad-id'
+// and user_id != (select owner_id from squads where id = 'your-squad-id')
+// and user_id not in (
+//   select user_id from membership_requests
+//   where squad_id = 'your-squad-id'
+//   and status = 'accepted'
+// );
+//
 // SQL MIGRATIONS — run once in Supabase SQL editor:
 //
 // -- Membership request additions
@@ -853,6 +889,7 @@ export default function SquadPage({ navigateTo }) {
   const [submitting, setSubmitting] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [pendingInvites, setPendingInvites] = useState([]);
   const [notifPrefs, setNotifPrefs] = useState({
     poll_created: true, poll_closing_soon: true, game_night_scheduled: true,
     thread_created: true, mentioned_in_thread: true, replied_in_thread: true,
@@ -1068,15 +1105,12 @@ export default function SquadPage({ navigateTo }) {
 
   async function loadNotifications() {
     setNotifsLoading(true);
-    // [DEBUG 3+4] log current user id before fetching
-    console.log('[notifs] fetching for user.id:', user.id);
-    const { data: rows, error: notifsError } = await supabase
+    const { data: rows } = await supabase
       .from('notifications')
       .select('id, squad_id, type, body, read, created_at, action_type, action_id')
       .eq('user_id', user.id)
       .order('created_at', { ascending: false })
       .limit(30);
-    console.log('[notifs] raw rows:', rows, 'error:', notifsError);
 
     if (!rows?.length) { setNotifications([]); setNotifsLoading(false); return; }
 
@@ -1216,6 +1250,7 @@ export default function SquadPage({ navigateTo }) {
     setSquadWishlist([]);
     setShowSettings(false);
     setConfirmDelete(false);
+    setPendingInvites([]);
     setDetailLoading(true);
     Promise.all([
       loadPolls(resolvedId),
@@ -1223,6 +1258,7 @@ export default function SquadPage({ navigateTo }) {
       loadTopGames(squad),
       loadSquadWishlist(squad),
       loadNotifPrefs(resolvedId),
+      loadPendingInvites(resolvedId),
     ]).finally(() => setDetailLoading(false));
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [resolvedId]);
@@ -1244,7 +1280,18 @@ export default function SquadPage({ navigateTo }) {
     await supabase.from('squad_members').insert({ squad_id: squad.id, user_id: user.id, role: 'admin' });
 
     for (const m of invitedMembers) {
-      await supabase.from('squad_members').insert({ squad_id: squad.id, user_id: m.id, role: 'member' });
+      const { data: req } = await supabase
+        .from('membership_requests')
+        .insert({ squad_id: squad.id, user_id: m.id, direction: 'invite', invited_by: user.id, status: 'pending' })
+        .select('id')
+        .single();
+      if (req) {
+        await insertNotifications(
+          [m.id], squad.id, 'squad_invite',
+          `${currentUser} invited you to join ${squadName.trim()}`,
+          { action_type: 'membership_request', action_id: req.id }
+        );
+      }
     }
 
     await loadSquads();
@@ -1257,9 +1304,9 @@ export default function SquadPage({ navigateTo }) {
 
   async function addMemberToSquad(squadId, members) {
     for (const m of members) {
-      await supabase.from('squad_members').insert({ squad_id: squadId, user_id: m.id });
+      const result = await sendInvite(m.id, m.username);
+      if (result?.error) console.error('[addMemberToSquad] invite failed for', m.username, ':', result.error);
     }
-    await loadSquads();
     setAddingMember(false);
     setNewMembers([]);
   }
@@ -1413,66 +1460,94 @@ export default function SquadPage({ navigateTo }) {
   }
 
   async function sendInvite(inviteeId, inviteeUsername) {
+    console.log('[sendInvite] called — invitee:', inviteeId, inviteeUsername, 'squad:', resolvedId);
     if (currentSquad?.members.some(m => m.user_id === inviteeId)) {
+      console.log('[sendInvite] blocked — already a member');
       return { error: 'Already a member of this squad' };
     }
-    const { data: existing } = await supabase
-      .from('membership_requests')
-      .select('id')
-      .eq('squad_id', resolvedId)
-      .eq('user_id', inviteeId)
-      .eq('status', 'pending')
-      .maybeSingle();
-    if (existing) return { error: 'Already invited' };
 
-    const { data: req, error } = await supabase
+    // Upsert so a stale row (denied/cancelled prior request) never blocks the invite.
+    const { data: req, error: reqError } = await supabase
       .from('membership_requests')
-      .insert({ squad_id: resolvedId, user_id: inviteeId, direction: 'invite', invited_by: user.id, status: 'pending' })
+      .upsert(
+        { squad_id: resolvedId, user_id: inviteeId, direction: 'invite', invited_by: user.id, status: 'pending' },
+        { onConflict: 'squad_id,user_id' }
+      )
       .select('id')
       .single();
-    if (error) return { error: 'Failed to send invite' };
+    if (reqError) {
+      console.error('[sendInvite] membership_request upsert error:', reqError);
+      return { error: 'Failed to send invite' };
+    }
 
-    await insertNotifications(
-      [inviteeId], resolvedId, 'squad_invite',
-      `${currentUser} invited you to join ${currentSquad.name}`,
-      { action_type: 'membership_request', action_id: req.id }
-    );
+    // Delete any stale invite notification for this request so the user sees a fresh one.
+    await supabase.from('notifications')
+      .delete()
+      .eq('action_id', req.id)
+      .eq('user_id', inviteeId);
+
+    const { error: notifError } = await supabase
+      .from('notifications')
+      .insert({
+        user_id: inviteeId,
+        squad_id: resolvedId,
+        type: 'squad_invite',
+        body: `${currentUser} invited you to join ${currentSquad.name}`,
+        action_type: 'membership_request',
+        action_id: req.id,
+      });
+    if (notifError) {
+      console.error('[sendInvite] notification insert error:', notifError);
+      return { error: 'Invite sent but notification failed' };
+    }
     return { success: true };
   }
 
+  async function loadPendingInvites(squadId) {
+    const { data } = await supabase
+      .from('membership_requests')
+      .select('id, user_id, created_at')
+      .eq('squad_id', squadId)
+      .eq('direction', 'invite')
+      .eq('status', 'pending');
+    if (!data?.length) { setPendingInvites([]); return; }
+    const { data: profileRows } = await supabase
+      .from('profiles').select('id, username').in('id', data.map(r => r.user_id));
+    const profileMap = Object.fromEntries((profileRows || []).map(p => [p.id, p.username]));
+    setPendingInvites(data.map(r => ({ ...r, username: profileMap[r.user_id] || 'unknown' })));
+  }
+
+  async function cancelInvite(requestId, userId) {
+    setPendingInvites(prev => prev.filter(r => r.id !== requestId));
+    await supabase.from('membership_requests').update({ status: 'cancelled' }).eq('id', requestId);
+  }
+
   async function requestToJoin(squadId, squadName) {
-    // [DEBUG 1] membership_request insert
-    console.log('[join-request] inserting membership_request', { squadId, userId: user.id, direction: 'request' });
     const { data: req, error: reqError } = await supabase
       .from('membership_requests')
       .insert({ squad_id: squadId, user_id: user.id, direction: 'request', status: 'pending' })
       .select('id')
       .single();
-    console.log('[join-request] membership_request result:', { req, error: reqError });
     if (reqError) return { error: 'Failed to send request' };
 
-    // [DEBUG 2] admin query
-    const { data: adminRows, error: adminError } = await supabase
+    const { data: adminRows } = await supabase
       .from('squad_members')
       .select('user_id')
       .eq('squad_id', squadId)
       .eq('role', 'admin');
-    console.log('[join-request] admin query result:', { adminRows, adminError, squadId });
     const adminIds = (adminRows || []).map(r => r.user_id);
-    console.log('[join-request] notifying admin IDs:', adminIds);
     if (adminIds.length) {
       await insertNotifications(
         adminIds, squadId, 'join_request',
         `${currentUser} has requested to join ${squadName}`,
         { action_type: 'membership_request', action_id: req.id }
       );
-    } else {
-      console.warn('[join-request] no admins found — notification will not be sent');
     }
     return { success: true };
   }
 
   async function acceptInvite(notif) {
+    console.log('[squad_members INSERT] acceptInvite called — notif:', notif.id, 'squad:', notif.squad_id, 'user:', user.id);
     setNotifications(prev => prev.map(n =>
       n.id === notif.id ? { ...n, read: true, request: { ...n.request, status: 'accepted' } } : n
     ));
@@ -1502,6 +1577,7 @@ export default function SquadPage({ navigateTo }) {
 
   async function approveJoinRequest(notif) {
     const requesterId = notif.request?.user_id;
+    console.log('[squad_members INSERT] approveJoinRequest called — notif:', notif.id, 'squad:', notif.squad_id, 'requester:', requesterId);
     setNotifications(prev => prev.map(n =>
       n.action_id === notif.action_id
         ? { ...n, read: true, request: { ...n.request, status: 'accepted' } }
@@ -1671,20 +1747,32 @@ export default function SquadPage({ navigateTo }) {
                     </div>
                   ) : (
                     <>
-                      {unread.map((n, i) => (
+                      {unread.map((n, i) => {
+                        const isInviteRow = n.type === 'squad_invite';
+                        const isRequestRow = n.type === 'join_request';
+                        const isActionRow = isInviteRow || isRequestRow || n.action_type === 'membership_request';
+                        // Never default to pending — require an actual request row with matching direction.
+                        // This prevents stale notifications from showing action buttons after an upsert
+                        // changed the row's direction (e.g. join_request row overwritten by a later invite).
+                        const reqStatus = n.request?.status ?? null;
+                        const reqDirection = n.request?.direction ?? null;
+                        // Approve/Deny only if user is admin of that squad AND the row still has direction='request'.
+                        const isAdminOfNotifSquad = squads.find(s => s.id === n.squad_id)
+                          ?.members?.find(m => m.user_id === user?.id)?.role === 'admin';
+                        return (
                         <div
                           key={n.id}
-                          onClick={() => n.action_type !== 'membership_request' && handleNotifClick(n)}
+                          onClick={() => !isActionRow && handleNotifClick(n)}
                           style={{
                             display: 'flex', alignItems: 'flex-start', gap: 12,
                             padding: '12px 16px',
                             borderBottom: i < unread.length - 1 || read.length > 0 ? `1px solid ${colors.border}` : 'none',
-                            cursor: n.action_type === 'membership_request' ? 'default' : 'pointer',
+                            cursor: isActionRow ? 'default' : 'pointer',
                             background: '#FFF8F3',
                             borderLeft: `3px solid ${squadAccentColor || colors.orange}`,
                             transition: 'background 0.12s',
                           }}
-                          onMouseEnter={e => { if (n.action_type !== 'membership_request') e.currentTarget.style.background = '#FFF0E6'; }}
+                          onMouseEnter={e => { if (!isActionRow) e.currentTarget.style.background = '#FFF0E6'; }}
                           onMouseLeave={e => e.currentTarget.style.background = '#FFF8F3'}
                         >
                           <span style={{ fontSize: 16, flexShrink: 0, lineHeight: 1.4 }}>
@@ -1699,27 +1787,28 @@ export default function SquadPage({ navigateTo }) {
                               <span style={{ fontFamily: fonts.body, fontSize: 11, color: colors.muted }}>·</span>
                               <span style={{ fontFamily: fonts.body, fontSize: 11, color: colors.muted }}>{timeAgo(n.created_at)}</span>
                             </div>
-                            {n.action_type === 'membership_request' && n.request && (() => {
-                              const { status } = n.request;
-                              if (status === 'pending' && n.type === 'squad_invite') return (
+                            {isActionRow && (() => {
+                              if (reqStatus === 'pending' && isInviteRow && reqDirection === 'invite') return (
                                 <div style={{ display: 'flex', gap: 6, marginTop: 8 }}>
                                   <button onMouseDown={() => acceptInvite(n)} style={{ ...button.secondary, fontSize: 11, padding: '4px 10px' }}>Accept</button>
                                   <button onMouseDown={() => denyInvite(n)} style={{ ...button.ghost, fontSize: 11, padding: '4px 10px', color: colors.muted, borderColor: colors.border }}>Decline</button>
                                 </div>
                               );
-                              if (status === 'pending' && n.type === 'join_request') return (
+                              if (reqStatus === 'pending' && isRequestRow && isAdminOfNotifSquad && reqDirection === 'request') return (
                                 <div style={{ display: 'flex', gap: 6, marginTop: 8 }}>
                                   <button onMouseDown={() => approveJoinRequest(n)} style={{ ...button.secondary, fontSize: 11, padding: '4px 10px' }}>Approve</button>
                                   <button onMouseDown={() => denyJoinRequest(n)} style={{ ...button.ghost, fontSize: 11, padding: '4px 10px', color: colors.muted, borderColor: colors.border }}>Deny</button>
                                 </div>
                               );
-                              if (status === 'accepted') return <div style={{ fontFamily: fonts.body, fontSize: 11, color: '#2D7A4F', marginTop: 6, fontWeight: 600 }}>{n.type === 'squad_invite' ? '✓ Joined' : '✓ Approved'}</div>;
-                              if (status === 'denied') return <div style={{ fontFamily: fonts.body, fontSize: 11, color: colors.muted, marginTop: 6 }}>{n.type === 'squad_invite' ? 'Declined' : 'Denied'}</div>;
+                              if (reqStatus === 'accepted') return <div style={{ fontFamily: fonts.body, fontSize: 11, color: '#2D7A4F', marginTop: 6, fontWeight: 600 }}>{isInviteRow ? '✓ Joined' : '✓ Approved'}</div>;
+                              if (reqStatus === 'denied') return <div style={{ fontFamily: fonts.body, fontSize: 11, color: colors.muted, marginTop: 6 }}>{isInviteRow ? 'Declined' : 'Denied'}</div>;
+                              if (reqStatus === 'cancelled') return <div style={{ fontFamily: fonts.body, fontSize: 11, color: colors.muted, marginTop: 6, fontStyle: 'italic' }}>Invite cancelled</div>;
                               return null;
                             })()}
                           </div>
                         </div>
-                      ))}
+                        );
+                      })}
 
                       {unread.length > 0 && read.length > 0 && (
                         <div style={{
@@ -1732,20 +1821,25 @@ export default function SquadPage({ navigateTo }) {
                         </div>
                       )}
 
-                      {read.map((n, i) => (
+                      {read.map((n, i) => {
+                        const isInviteRow = n.type === 'squad_invite';
+                        const isRequestRow = n.type === 'join_request';
+                        const isActionRow = isInviteRow || isRequestRow || n.action_type === 'membership_request';
+                        const reqStatus = n.request?.status ?? null;
+                        return (
                         <div
                           key={n.id}
-                          onClick={() => n.action_type !== 'membership_request' && handleNotifClick(n)}
+                          onClick={() => !isActionRow && handleNotifClick(n)}
                           style={{
                             display: 'flex', alignItems: 'flex-start', gap: 12,
                             padding: '12px 16px',
                             borderBottom: i < read.length - 1 ? `1px solid ${colors.border}` : 'none',
-                            cursor: n.action_type === 'membership_request' ? 'default' : 'pointer',
+                            cursor: isActionRow ? 'default' : 'pointer',
                             background: colors.white,
                             borderLeft: '3px solid transparent',
                             transition: 'background 0.12s',
                           }}
-                          onMouseEnter={e => { if (n.action_type !== 'membership_request') e.currentTarget.style.background = colors.lightBg; }}
+                          onMouseEnter={e => { if (!isActionRow) e.currentTarget.style.background = colors.lightBg; }}
                           onMouseLeave={e => e.currentTarget.style.background = colors.white}
                         >
                           <span style={{ fontSize: 16, flexShrink: 0, lineHeight: 1.4, opacity: 0.5 }}>
@@ -1760,15 +1854,16 @@ export default function SquadPage({ navigateTo }) {
                               <span style={{ fontFamily: fonts.body, fontSize: 11, color: colors.muted }}>·</span>
                               <span style={{ fontFamily: fonts.body, fontSize: 11, color: colors.muted }}>{timeAgo(n.created_at)}</span>
                             </div>
-                            {n.action_type === 'membership_request' && n.request && (() => {
-                              const { status } = n.request;
-                              if (status === 'accepted') return <div style={{ fontFamily: fonts.body, fontSize: 11, color: '#2D7A4F', marginTop: 6, fontWeight: 600 }}>{n.type === 'squad_invite' ? '✓ Joined' : '✓ Approved'}</div>;
-                              if (status === 'denied') return <div style={{ fontFamily: fonts.body, fontSize: 11, color: colors.muted, marginTop: 6 }}>{n.type === 'squad_invite' ? 'Declined' : 'Denied'}</div>;
+                            {isActionRow && reqStatus && (() => {
+                              if (reqStatus === 'accepted') return <div style={{ fontFamily: fonts.body, fontSize: 11, color: '#2D7A4F', marginTop: 6, fontWeight: 600 }}>{isInviteRow ? '✓ Joined' : '✓ Approved'}</div>;
+                              if (reqStatus === 'denied') return <div style={{ fontFamily: fonts.body, fontSize: 11, color: colors.muted, marginTop: 6 }}>{isInviteRow ? 'Declined' : 'Denied'}</div>;
+                              if (reqStatus === 'cancelled') return <div style={{ fontFamily: fonts.body, fontSize: 11, color: colors.muted, marginTop: 6, fontStyle: 'italic' }}>Invite cancelled</div>;
                               return null;
                             })()}
                           </div>
                         </div>
-                      ))}
+                        );
+                      })}
                     </>
                   )}
                 </div>
@@ -1885,13 +1980,13 @@ export default function SquadPage({ navigateTo }) {
                 </div>
               </div>
 
-              {/* Add member */}
+              {/* Invite member */}
               {!addingMember ? (
                 <button
                   onClick={() => setAddingMember(true)}
                   style={{ ...button.ghost, marginTop: 12, fontSize: 13, padding: '5px 12px' }}
                 >
-                  + Add member
+                  + Invite member
                 </button>
               ) : (
                 <div style={{ marginTop: 12, display: 'flex', gap: 8, alignItems: 'flex-start' }}>
@@ -1909,7 +2004,7 @@ export default function SquadPage({ navigateTo }) {
                     disabled={newMembers.length === 0}
                     style={{ ...button.secondary, fontSize: 13, padding: '8px 14px', opacity: newMembers.length === 0 ? 0.5 : 1, cursor: newMembers.length === 0 ? 'not-allowed' : 'pointer', whiteSpace: 'nowrap' }}
                   >
-                    Add
+                    Send Invites
                   </button>
                   <button
                     onClick={() => { setAddingMember(false); setNewMembers([]); }}
@@ -1962,8 +2057,37 @@ export default function SquadPage({ navigateTo }) {
                       ))}
                       <InviteForm
                         squadMembers={currentSquad.members}
-                        onSendInvite={sendInvite}
+                        onSendInvite={async (id, username) => {
+                          const result = await sendInvite(id, username);
+                          if (result.success) loadPendingInvites(resolvedId);
+                          return result;
+                        }}
                       />
+
+                      {/* Pending invites */}
+                      {pendingInvites.length > 0 && (
+                        <div style={{ marginTop: 12 }}>
+                          <div style={{ fontFamily: fonts.body, fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.6px', color: colors.muted, marginBottom: 8 }}>
+                            Pending Invites
+                          </div>
+                          {pendingInvites.map(inv => (
+                            <div key={inv.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '7px 0', borderBottom: `1px solid ${colors.border}` }}>
+                              <MemberAvatar name={inv.username} size={26} />
+                              <span style={{ fontFamily: fonts.body, fontSize: 14, color: colors.text, flex: 1 }}>{inv.username}</span>
+                              <span style={{ fontFamily: fonts.body, fontSize: 11, color: colors.muted, background: colors.lightBg, borderRadius: 8, padding: '2px 8px' }}>
+                                Pending
+                              </span>
+                              <button
+                                onClick={() => cancelInvite(inv.id, inv.user_id)}
+                                style={{ ...button.ghost, fontSize: 11, padding: '3px 8px', color: colors.muted, borderColor: colors.border }}
+                              >
+                                Cancel
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+
                       <div style={{ height: 1, background: colors.border, margin: '16px 0' }} />
                     </>
                   )}
