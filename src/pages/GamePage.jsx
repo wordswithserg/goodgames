@@ -126,11 +126,9 @@ function ReviewCard({ review, voteData = { up: 0, down: 0, mine: null }, onVote,
   const [isEditing, setIsEditing] = useState(false);
   const [editRating, setEditRating] = useState(review.rating);
   const [editBody, setEditBody] = useState(review.body || '');
-  const [showOriginal, setShowOriginal] = useState(false);
 
   const isEdited = !!review.edited_at;
-  const displayRating = showOriginal ? review.original_rating : review.rating;
-  const displayBody = showOriginal ? review.original_body : review.body;
+  const editCount = review.edits?.length ?? 0;
 
   function vote(dir) { if (onVote) onVote(review.id, dir); }
 
@@ -192,7 +190,7 @@ function ReviewCard({ review, voteData = { up: 0, down: 0, mine: null }, onVote,
               Edit
             </button>
           )}
-          {!isEditing && <StarDisplay rating={displayRating} size={15} />}
+          {!isEditing && <StarDisplay rating={review.rating} size={15} />}
         </div>
       </div>
 
@@ -214,36 +212,36 @@ function ReviewCard({ review, voteData = { up: 0, down: 0, mine: null }, onVote,
         </div>
       ) : (
         <>
-          {displayBody && (
+          {review.body && (
             <p style={{
               fontFamily: fonts.body,
               fontSize: 14,
-              color: showOriginal ? colors.muted : colors.text,
+              color: colors.text,
               margin: '0 0 10px',
               lineHeight: 1.65,
-              fontStyle: showOriginal ? 'italic' : 'normal',
             }}>
-              {displayBody}
+              {review.body}
             </p>
           )}
 
-          {isEdited && (
-            <button
-              onClick={() => setShowOriginal(s => !s)}
-              style={{
-                background: 'none',
-                border: 'none',
-                cursor: 'pointer',
-                fontFamily: fonts.body,
-                fontSize: 12,
-                color: colors.muted,
-                padding: 0,
-                marginBottom: 10,
-                textDecoration: 'underline',
-              }}
-            >
-              {showOriginal ? 'View current version' : 'View original'}
-            </button>
+          {isEdited && editCount > 0 && (
+            <div style={{ marginBottom: 10, borderLeft: `2px solid ${colors.border}`, paddingLeft: 12 }}>
+              {review.edits.map((edit, i) => (
+                <div key={i} style={{ marginBottom: i < review.edits.length - 1 ? 10 : 0 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 3 }}>
+                    <StarDisplay rating={edit.rating} size={11} />
+                    <span style={{ fontFamily: fonts.body, fontSize: 11, color: colors.muted }}>
+                      v{i + 1} · {new Date(edit.edited_at).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' })}
+                    </span>
+                  </div>
+                  {edit.body && (
+                    <p style={{ fontFamily: fonts.body, fontSize: 13, color: colors.muted, margin: 0, lineHeight: 1.55, fontStyle: 'italic' }}>
+                      {edit.body}
+                    </p>
+                  )}
+                </div>
+              ))}
+            </div>
           )}
 
           <div style={{ display: 'flex', gap: 8 }}>
@@ -320,23 +318,32 @@ export default function GamePage({ game, navigateTo }) {
       setReviewsLoading(true);
       const { data: rawReviews, error } = await supabase
         .from('reviews')
-        .select('id, rating, body, created_at, user_id')
+        .select('id, rating, body, created_at, user_id, edited_at')
         .eq('game_id', game.id)
         .order('created_at', { ascending: false });
 
       if (cancelled) return;
-      if (error) { console.error('[GamePage] fetch reviews:', error); setReviewsLoading(false); return; }
+      if (error) { setReviewsLoading(false); return; }
       if (!rawReviews || rawReviews.length === 0) { setReviewList([]); setReviewsLoading(false); return; }
 
       const userIds = [...new Set(rawReviews.map(r => r.user_id))];
-      const { data: profiles } = await supabase
-        .from('profiles')
-        .select('id, username')
-        .in('id', userIds);
+      const reviewIds = rawReviews.map(r => r.id);
+
+      const [{ data: profiles }, { data: editRows }] = await Promise.all([
+        supabase.from('profiles').select('id, username').in('id', userIds),
+        supabase.from('review_edits').select('review_id, rating, body, edited_at')
+          .in('review_id', reviewIds).order('edited_at', { ascending: true }),
+      ]);
 
       if (cancelled) return;
       const usernameMap = {};
       (profiles || []).forEach(p => { usernameMap[p.id] = p.username; });
+
+      const editsMap = {};
+      (editRows || []).forEach(e => {
+        if (!editsMap[e.review_id]) editsMap[e.review_id] = [];
+        editsMap[e.review_id].push(e);
+      });
 
       setReviewList(rawReviews.map(r => ({
         id: r.id,
@@ -344,9 +351,8 @@ export default function GamePage({ game, navigateTo }) {
         rating: r.rating,
         body: r.body,
         date: new Date(r.created_at).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' }),
-        edited_at: null,
-        original_rating: null,
-        original_body: null,
+        edited_at: r.edited_at,
+        edits: editsMap[r.id] || [],
       })));
       setReviewsLoading(false);
     }
@@ -437,8 +443,7 @@ export default function GamePage({ game, navigateTo }) {
       body: data.body,
       date: new Date(data.created_at).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' }),
       edited_at: null,
-      original_rating: null,
-      original_body: null,
+      edits: [],
     }, ...prev]);
     setRating(0);
     setBody('');
@@ -451,24 +456,29 @@ export default function GamePage({ game, navigateTo }) {
     if (!review) return;
     const trimmedBody = newBody.trim();
     const editedAt = new Date().toISOString();
-    // Preserve the very first original across multiple edits.
-    const originalRating = review.original_rating ?? review.rating;
-    const originalBody = review.original_body !== null ? review.original_body : (review.body ?? null);
+
+    // Snapshot the current version into history before overwriting.
+    await supabase.from('review_edits').insert({
+      review_id: reviewId,
+      rating: review.rating,
+      body: review.body,
+      edited_at: editedAt,
+    });
 
     const { error } = await supabase
       .from('reviews')
-      .update({ rating: newRating, body: trimmedBody, original_rating: originalRating, original_body: originalBody, edited_at: editedAt })
+      .update({ rating: newRating, body: trimmedBody, edited_at: editedAt })
       .eq('id', reviewId)
       .eq('user_id', user.id);
 
-    if (error) { console.error('[GamePage] edit review:', error); return; }
+    if (error) return;
+    const newEdit = { review_id: reviewId, rating: review.rating, body: review.body, edited_at: editedAt };
     setReviewList(prev => prev.map(r => r.id === reviewId ? {
       ...r,
       rating: newRating,
       body: trimmedBody,
       edited_at: editedAt,
-      original_rating: originalRating,
-      original_body: originalBody,
+      edits: [...(r.edits || []), newEdit],
     } : r));
   }
 

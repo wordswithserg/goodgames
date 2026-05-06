@@ -409,7 +409,15 @@ function CreatePollForm({ onCreate }) {
 function ThreadSection({ threads, onCreateThread, onAddReply, currentUser, isAdmin, onArchive }) {
   const [newTitle, setNewTitle] = useState('');
   const [replyText, setReplyText] = useState({});
-  const [openThread, setOpenThread] = useState(null);
+  const [openThreads, setOpenThreads] = useState(() => new Set(threads.map(t => t.id)));
+
+  useEffect(() => {
+    setOpenThreads(prev => {
+      const next = new Set(prev);
+      threads.forEach(t => { if (!prev.has(t.id)) next.add(t.id); });
+      return next;
+    });
+  }, [threads]);
 
   function createThread() {
     if (!newTitle.trim()) return;
@@ -447,12 +455,16 @@ function ThreadSection({ threads, onCreateThread, onAddReply, currentUser, isAdm
       )}
 
       {threads.filter(t => !t.archived).map(thread => {
-        const isOpen = openThread === thread.id;
+        const isOpen = openThreads.has(thread.id);
         return (
           <div key={thread.id} style={{ ...card, padding: '14px 18px', marginBottom: 10 }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
               <div
-                onClick={() => setOpenThread(isOpen ? null : thread.id)}
+                onClick={() => setOpenThreads(prev => {
+                  const next = new Set(prev);
+                  if (next.has(thread.id)) next.delete(thread.id); else next.add(thread.id);
+                  return next;
+                })}
                 style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flex: 1, minWidth: 0 }}
               >
                 <div style={{ flex: 1, minWidth: 0 }}>
@@ -1201,15 +1213,10 @@ export default function SquadPage({ navigateTo }) {
   }
 
   async function insertNotifications(userIds, squadId, type, body, extra = {}) {
-    if (!userIds.length) {
-      console.warn('[notifications] insertNotifications: no recipients for type', type);
-      return;
-    }
-    const { error } = await supabase.from('notifications').insert(
+    if (!userIds.length) return;
+    await supabase.from('notifications').insert(
       userIds.map(userId => ({ user_id: userId, squad_id: squadId, type, body, ...extra }))
     );
-    if (error) console.error('[notifications] insert error:', error);
-    else console.log('[notifications] inserted', userIds.length, 'notification(s) of type', type);
   }
 
   // TODO: mentioned_in_thread — trigger when a reply body is saved.
@@ -1304,8 +1311,7 @@ export default function SquadPage({ navigateTo }) {
 
   async function addMemberToSquad(squadId, members) {
     for (const m of members) {
-      const result = await sendInvite(m.id, m.username);
-      if (result?.error) console.error('[addMemberToSquad] invite failed for', m.username, ':', result.error);
+      await sendInvite(m.id, m.username);
     }
     setAddingMember(false);
     setNewMembers([]);
@@ -1344,11 +1350,8 @@ export default function SquadPage({ navigateTo }) {
     if (!error) {
       await loadPolls(resolvedId);
       const recipientIds = await getSubscribedMemberIds(resolvedId, 'poll_created');
-      console.log('[notifications] poll_created recipients:', recipientIds, 'squad members:', currentSquad?.members?.map(m => m.user_id));
       await insertNotifications(recipientIds, resolvedId, 'poll_created',
         `${currentUser} started a new poll in ${currentSquad.name}: ${question}`);
-    } else {
-      console.error('[notifications] createPoll insert error:', error);
     }
   }
 
@@ -1460,9 +1463,7 @@ export default function SquadPage({ navigateTo }) {
   }
 
   async function sendInvite(inviteeId, inviteeUsername) {
-    console.log('[sendInvite] called — invitee:', inviteeId, inviteeUsername, 'squad:', resolvedId);
     if (currentSquad?.members.some(m => m.user_id === inviteeId)) {
-      console.log('[sendInvite] blocked — already a member');
       return { error: 'Already a member of this squad' };
     }
 
@@ -1476,7 +1477,6 @@ export default function SquadPage({ navigateTo }) {
       .select('id')
       .single();
     if (reqError) {
-      console.error('[sendInvite] membership_request upsert error:', reqError);
       return { error: 'Failed to send invite' };
     }
 
@@ -1497,7 +1497,6 @@ export default function SquadPage({ navigateTo }) {
         action_id: req.id,
       });
     if (notifError) {
-      console.error('[sendInvite] notification insert error:', notifError);
       return { error: 'Invite sent but notification failed' };
     }
     return { success: true };
@@ -1547,7 +1546,6 @@ export default function SquadPage({ navigateTo }) {
   }
 
   async function acceptInvite(notif) {
-    console.log('[squad_members INSERT] acceptInvite called — notif:', notif.id, 'squad:', notif.squad_id, 'user:', user.id);
     setNotifications(prev => prev.map(n =>
       n.id === notif.id ? { ...n, read: true, request: { ...n.request, status: 'accepted' } } : n
     ));
@@ -1577,7 +1575,6 @@ export default function SquadPage({ navigateTo }) {
 
   async function approveJoinRequest(notif) {
     const requesterId = notif.request?.user_id;
-    console.log('[squad_members INSERT] approveJoinRequest called — notif:', notif.id, 'squad:', notif.squad_id, 'requester:', requesterId);
     setNotifications(prev => prev.map(n =>
       n.action_id === notif.action_id
         ? { ...n, read: true, request: { ...n.request, status: 'accepted' } }
