@@ -1,4 +1,7 @@
-import { useState, useEffect } from 'react';
+// SQL MIGRATION — run once in the Supabase SQL editor:
+// ALTER TABLE profiles ADD COLUMN IF NOT EXISTS avatar_url text;
+
+import { useState, useEffect, useRef } from 'react';
 import { colors, fonts, card, button, input } from '../styles/theme';
 import { games } from '../data/games';
 import { GENRE_COLORS, StarDisplay } from '../components/GameCard';
@@ -142,6 +145,11 @@ export default function PlayerPage({ navigateTo }) {
   const currentUser = profile?.username || null;
   const [editMode, setEditMode] = useState(false);
   const [showTop10Search, setShowTop10Search] = useState(false);
+
+  const [avatarUrl, setAvatarUrl] = useState(profile?.avatar_url || null);
+  const [avatarUploading, setAvatarUploading] = useState(false);
+  const [avatarError, setAvatarError] = useState(null);
+  const avatarInputRef = useRef(null);
 
   const [nowPlayingId, setNowPlayingId] = useState(null);
   const [nowPlayingGame, setNowPlayingGame] = useState(null);
@@ -385,6 +393,43 @@ export default function PlayerPage({ navigateTo }) {
     }
   }
 
+  // Sync avatarUrl from profile once auth resolves.
+  useEffect(() => {
+    setAvatarUrl(profile?.avatar_url || null);
+  }, [profile?.avatar_url]); // eslint-disable-line
+
+  async function handleAvatarFileSelect(e) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (file.size > 5 * 1024 * 1024) {
+      setAvatarError('Image must be 5 MB or less.');
+      return;
+    }
+    setAvatarError(null);
+    setAvatarUploading(true);
+    const path = `${user.id}/avatar.jpg`;
+    const { error: uploadError } = await supabase.storage
+      .from('avatars')
+      .upload(path, file, { upsert: true, contentType: file.type });
+    if (uploadError) {
+      setAvatarError('Upload failed. Please try again.');
+      setAvatarUploading(false);
+      return;
+    }
+    const { data: urlData } = supabase.storage.from('avatars').getPublicUrl(path);
+    const publicUrl = `${urlData?.publicUrl}?t=${Date.now()}`;
+    const { error: updateError } = await supabase.from('profiles')
+      .update({ avatar_url: publicUrl })
+      .eq('id', user.id);
+    if (updateError) {
+      setAvatarError('Could not save avatar. Please try again.');
+    } else {
+      setAvatarUrl(publicUrl);
+    }
+    setAvatarUploading(false);
+    e.target.value = '';
+  }
+
   // Sync nowPlayingId from profile once auth resolves (useState initializer runs before profile loads).
   useEffect(() => {
     setNowPlayingId(profile?.now_playing_game_id || null);
@@ -440,20 +485,74 @@ export default function PlayerPage({ navigateTo }) {
         gap: 12,
       }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
-          <div style={{
-            width: 52,
-            height: 52,
-            borderRadius: '50%',
-            background: colors.navy,
-            color: colors.white,
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            fontFamily: fonts.heading,
-            fontWeight: 700,
-            fontSize: 22,
-          }}>
-            {currentUser[0].toUpperCase()}
+          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4 }}>
+            <div style={{ position: 'relative', width: 52, height: 52, flexShrink: 0 }}>
+              {avatarUploading ? (
+                <div style={{
+                  width: 52, height: 52, borderRadius: '50%',
+                  background: colors.navy,
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                }}>
+                  <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,0.7)" strokeWidth="2.5">
+                    <line x1="12" y1="2" x2="12" y2="6" />
+                    <line x1="12" y1="18" x2="12" y2="22" />
+                    <line x1="4.93" y1="4.93" x2="7.76" y2="7.76" />
+                    <line x1="16.24" y1="16.24" x2="19.07" y2="19.07" />
+                    <line x1="2" y1="12" x2="6" y2="12" />
+                    <line x1="18" y1="12" x2="22" y2="12" />
+                    <line x1="4.93" y1="19.07" x2="7.76" y2="16.24" />
+                    <line x1="16.24" y1="7.76" x2="19.07" y2="4.93" />
+                    <animateTransform attributeName="transform" type="rotate" from="0 12 12" to="360 12 12" dur="0.8s" repeatCount="indefinite" />
+                  </svg>
+                </div>
+              ) : avatarUrl ? (
+                <img
+                  src={avatarUrl}
+                  alt={currentUser}
+                  style={{ width: 52, height: 52, borderRadius: '50%', objectFit: 'cover', display: 'block' }}
+                />
+              ) : (
+                <div style={{
+                  width: 52, height: 52, borderRadius: '50%',
+                  background: colors.navy, color: colors.white,
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  fontFamily: fonts.heading, fontWeight: 700, fontSize: 22,
+                }}>
+                  {currentUser[0].toUpperCase()}
+                </div>
+              )}
+              {editMode && (
+                <button
+                  onClick={() => avatarInputRef.current?.click()}
+                  title="Change avatar"
+                  style={{
+                    position: 'absolute', bottom: 0, right: 0,
+                    width: 28, height: 28, borderRadius: '50%',
+                    background: 'rgba(0,0,0,0.65)', border: '2px solid rgba(255,255,255,0.8)',
+                    color: '#fff', cursor: 'pointer',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    padding: 0,
+                  }}
+                >
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
+                    <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
+                  </svg>
+                </button>
+              )}
+              <input
+                ref={avatarInputRef}
+                type="file"
+                accept="image/png,image/jpeg,image/gif,image/webp"
+                style={{ display: 'none' }}
+                onChange={handleAvatarFileSelect}
+              />
+            </div>
+            {avatarError && (
+              <div style={{ fontFamily: fonts.body, fontSize: 11, color: '#C0392B', maxWidth: 80, textAlign: 'center', lineHeight: 1.3 }}>
+                {avatarError}
+              </div>
+            )}
           </div>
           <div>
             <h1 style={{

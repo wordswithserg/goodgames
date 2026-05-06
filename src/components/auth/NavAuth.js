@@ -39,7 +39,18 @@ export default function NavAuth({ onNavigateToProfile, onNavigateToSettings }) {
 
   return (
     <div style={styles.userMenu}>
-      <button style={styles.avatar} onClick={() => setShowDropdown(prev => !prev)}>{initials}</button>
+      <button
+        style={{ ...styles.avatar, ...(profile?.avatar_url ? { padding: 0, overflow: 'hidden' } : {}) }}
+        onClick={() => setShowDropdown(prev => !prev)}
+      >
+        {profile?.avatar_url ? (
+          <img
+            src={profile.avatar_url}
+            alt={initials}
+            style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
+          />
+        ) : initials}
+      </button>
       {showDropdown && (
         <>
           <div style={{ position: 'fixed', inset: 0, zIndex: 499 }} onClick={() => setShowDropdown(false)} />
