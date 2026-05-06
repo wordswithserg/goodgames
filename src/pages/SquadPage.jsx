@@ -1,5 +1,39 @@
 // SQL MIGRATIONS — run once in Supabase SQL editor:
 //
+// -- Admin roles
+// alter table squad_members add column if not exists role text not null default 'member';
+// update squad_members set role = 'admin' where user_id = (
+//   select owner_id from squads where squads.id = squad_members.squad_id
+// );
+//
+// -- Squad appearance
+// alter table squads add column if not exists background_color text;
+// alter table squads add column if not exists accent_color text;
+//
+// -- Archiving
+// alter table polls add column if not exists archived boolean default false;
+// alter table threads add column if not exists archived boolean default false;
+//
+// -- Membership requests
+// create table if not exists membership_requests (
+//   id uuid primary key default gen_random_uuid(),
+//   squad_id uuid references squads(id) on delete cascade,
+//   user_id uuid references auth.users(id) on delete cascade,
+//   status text not null default 'pending',
+//   created_at timestamptz default now(),
+//   unique(squad_id, user_id)
+// );
+// alter table membership_requests enable row level security;
+// create policy "admins manage requests" on membership_requests
+//   for all using (
+//     exists (
+//       select 1 from squad_members
+//       where squad_members.squad_id = membership_requests.squad_id
+//         and squad_members.user_id = auth.uid()
+//         and squad_members.role = 'admin'
+//     )
+//   );
+//
 // CREATE TABLE IF NOT EXISTS squad_notification_prefs (
 //   id uuid DEFAULT gen_random_uuid() PRIMARY KEY,
 //   user_id uuid NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,
@@ -58,8 +92,10 @@ function timeAgo(iso) {
 const NOTIF_META = {
   poll_created:          { icon: '📊', sectionId: 'section-polls' },
   poll_closing_soon:     { icon: '⏱',  sectionId: 'section-polls' },
+  poll_archived:         { icon: '🗄',  sectionId: 'section-polls' },
   game_night_scheduled:  { icon: '📅', sectionId: 'section-meetup' },
   thread_created:        { icon: '💬', sectionId: 'section-threads' },
+  thread_archived:       { icon: '🗄',  sectionId: 'section-threads' },
   replied_in_thread:     { icon: '↩',  sectionId: 'section-threads' },
   mentioned_in_thread:   { icon: '@',  sectionId: 'section-threads' },
 };
@@ -124,17 +160,28 @@ function Countdown({ target }) {
   );
 }
 
-// poll: { id, question, options, myVote (number|null), tallies }
-// castVote(optionIndex)
-function PollSection({ poll, castVote }) {
+// poll: { id, question, options, myVote (number|null), tallies, archived }
+// castVote(optionIndex), isAdmin, onArchive(id, archived), accentColor
+function PollSection({ poll, castVote, isAdmin, onArchive, accentColor }) {
   const hasVoted = poll.myVote !== null && poll.myVote !== undefined;
   const tallies = poll.tallies;
   const total = tallies.reduce((a, b) => a + b, 0);
+  const accent = accentColor || colors.navy;
 
   return (
     <div style={{ ...card, padding: '16px 20px', marginBottom: 12 }}>
-      <div style={{ fontFamily: fonts.heading, fontSize: 16, fontWeight: 700, color: colors.text, marginBottom: 12 }}>
-        {poll.question}
+      <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 8, marginBottom: 12 }}>
+        <div style={{ fontFamily: fonts.heading, fontSize: 16, fontWeight: 700, color: colors.text }}>
+          {poll.question}
+        </div>
+        {isAdmin && (
+          <button
+            onClick={() => onArchive(poll.id, !poll.archived)}
+            style={{ ...button.ghost, fontSize: 11, padding: '3px 8px', whiteSpace: 'nowrap', flexShrink: 0, color: colors.muted, borderColor: colors.border }}
+          >
+            {poll.archived ? 'Unarchive' : 'Archive'}
+          </button>
+        )}
       </div>
       {poll.options.map((opt, i) => {
         const pct = total > 0 ? Math.round((tallies[i] / total) * 100) : 0;
@@ -142,7 +189,7 @@ function PollSection({ poll, castVote }) {
         return (
           <div key={i} style={{ marginBottom: 8, position: 'relative' }}>
             <div style={{
-              border: `1px solid ${isMyVote ? colors.navy : colors.border}`,
+              border: `1px solid ${isMyVote ? accent : colors.border}`,
               borderRadius: 8,
               overflow: 'hidden',
               background: colors.white,
@@ -156,7 +203,7 @@ function PollSection({ poll, castVote }) {
                   top: 0, left: 0,
                   height: '100%',
                   width: `${pct}%`,
-                  background: isMyVote ? `${colors.navy}20` : `${colors.border}88`,
+                  background: isMyVote ? `${accent}20` : `${colors.border}88`,
                   transition: 'width 0.35s',
                   pointerEvents: 'none',
                   borderRadius: 8,
@@ -189,7 +236,7 @@ function PollSection({ poll, castVote }) {
                   </span>
                 )}
                 {isMyVote && (
-                  <span style={{ fontSize: 12, color: colors.navy, fontWeight: 700, flexShrink: 0 }}>✓</span>
+                  <span style={{ fontSize: 12, color: accent, fontWeight: 700, flexShrink: 0 }}>✓</span>
                 )}
               </div>
             </div>
@@ -284,9 +331,9 @@ function CreatePollForm({ onCreate }) {
   );
 }
 
-// threads: [{ id, title, author, date, replies: [{ id, author, body, date }] }]
-// onCreateThread(title), onAddReply(threadId, body)
-function ThreadSection({ threads, onCreateThread, onAddReply, currentUser }) {
+// threads: [{ id, title, author, date, replies, archived }]
+// onCreateThread(title), onAddReply(threadId, body), isAdmin, onArchive(id, archived)
+function ThreadSection({ threads, onCreateThread, onAddReply, currentUser, isAdmin, onArchive }) {
   const [newTitle, setNewTitle] = useState('');
   const [replyText, setReplyText] = useState({});
   const [openThread, setOpenThread] = useState(null);
@@ -320,31 +367,41 @@ function ThreadSection({ threads, onCreateThread, onAddReply, currentUser }) {
         </button>
       </div>
 
-      {threads.length === 0 && (
+      {threads.filter(t => !t.archived).length === 0 && (
         <p style={{ fontFamily: fonts.body, fontSize: 14, color: colors.muted, textAlign: 'center', padding: '20px 0' }}>
           No threads yet. Start a conversation!
         </p>
       )}
 
-      {threads.map(thread => {
+      {threads.filter(t => !t.archived).map(thread => {
         const isOpen = openThread === thread.id;
         return (
           <div key={thread.id} style={{ ...card, padding: '14px 18px', marginBottom: 10 }}>
-            <div
-              onClick={() => setOpenThread(isOpen ? null : thread.id)}
-              style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}
-            >
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ fontFamily: fonts.body, fontWeight: 600, fontSize: 14, color: colors.text }}>
-                  {thread.title}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <div
+                onClick={() => setOpenThread(isOpen ? null : thread.id)}
+                style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flex: 1, minWidth: 0 }}
+              >
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontFamily: fonts.body, fontWeight: 600, fontSize: 14, color: colors.text }}>
+                    {thread.title}
+                  </div>
+                  <div style={{ fontFamily: fonts.body, fontSize: 12, color: colors.muted, marginTop: 2 }}>
+                    {thread.author} · {thread.date} · {thread.replies.length} repl{thread.replies.length !== 1 ? 'ies' : 'y'}
+                  </div>
                 </div>
-                <div style={{ fontFamily: fonts.body, fontSize: 12, color: colors.muted, marginTop: 2 }}>
-                  {thread.author} · {thread.date} · {thread.replies.length} repl{thread.replies.length !== 1 ? 'ies' : 'y'}
-                </div>
+                <span style={{ color: colors.muted, fontSize: 14, flexShrink: 0 }}>
+                  {isOpen ? '▲' : '▼'}
+                </span>
               </div>
-              <span style={{ color: colors.muted, fontSize: 14, flexShrink: 0 }}>
-                {isOpen ? '▲' : '▼'}
-              </span>
+              {isAdmin && (
+                <button
+                  onClick={() => onArchive(thread.id, true)}
+                  style={{ ...button.ghost, fontSize: 11, padding: '3px 8px', color: colors.muted, borderColor: colors.border, flexShrink: 0 }}
+                >
+                  Archive
+                </button>
+              )}
             </div>
 
             {isOpen && (
@@ -385,6 +442,31 @@ function ThreadSection({ threads, onCreateThread, onAddReply, currentUser }) {
           </div>
         );
       })}
+
+      {/* Archived threads — admin only */}
+      {isAdmin && threads.filter(t => t.archived).length > 0 && (
+        <div style={{ marginTop: 20 }}>
+          <div style={{ fontFamily: fonts.body, fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.6px', color: colors.muted, marginBottom: 8 }}>
+            Archived Threads
+          </div>
+          {threads.filter(t => t.archived).map(thread => (
+            <div key={thread.id} style={{ ...card, padding: '10px 14px', marginBottom: 8, opacity: 0.65 }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+                <div>
+                  <div style={{ fontFamily: fonts.body, fontWeight: 600, fontSize: 13, color: colors.text }}>{thread.title}</div>
+                  <div style={{ fontFamily: fonts.body, fontSize: 11, color: colors.muted }}>{thread.author} · {thread.date}</div>
+                </div>
+                <button
+                  onClick={() => onArchive(thread.id, false)}
+                  style={{ ...button.ghost, fontSize: 11, padding: '3px 8px', whiteSpace: 'nowrap', flexShrink: 0 }}
+                >
+                  Unarchive
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -514,6 +596,9 @@ export default function SquadPage({ navigateTo }) {
 
   const resolvedId = activeSquadId || squads[0]?.id || null;
   const currentSquad = resolvedId ? squads.find(s => s.id === resolvedId) : null;
+  const isAdmin = currentSquad?.members?.find(m => m.user_id === user?.id)?.role === 'admin';
+  const squadBgColor = currentSquad?.background_color || null;
+  const squadAccentColor = currentSquad?.accent_color || null;
 
   // ── data loaders ──────────────────────────────────────────────────────────
 
@@ -535,12 +620,12 @@ export default function SquadPage({ navigateTo }) {
     const [{ data: squadRows }, { data: allMemberRows }] = await Promise.all([
       supabase
         .from('squads')
-        .select('id, name, owner_id, meetup_date')
+        .select('id, name, owner_id, meetup_date, background_color, accent_color')
         .in('id', squadIds)
         .order('created_at', { ascending: false }),
       supabase
         .from('squad_members')
-        .select('squad_id, user_id')
+        .select('squad_id, user_id, role')
         .in('squad_id', squadIds),
     ]);
 
@@ -556,7 +641,7 @@ export default function SquadPage({ navigateTo }) {
       ...s,
       members: (allMemberRows || [])
         .filter(m => m.squad_id === s.id)
-        .map(m => ({ user_id: m.user_id, username: profileMap[m.user_id] || 'unknown' })),
+        .map(m => ({ user_id: m.user_id, username: profileMap[m.user_id] || 'unknown', role: m.role || 'member' })),
     }));
 
     setSquads(assembled);
@@ -566,7 +651,7 @@ export default function SquadPage({ navigateTo }) {
   async function loadPolls(squadId) {
     const { data: pollRows } = await supabase
       .from('polls')
-      .select('id, question, options, created_at')
+      .select('id, question, options, created_at, archived')
       .eq('squad_id', squadId)
       .order('created_at', { ascending: false });
 
@@ -590,6 +675,7 @@ export default function SquadPage({ navigateTo }) {
         options: p.options,
         myVote: myVoteRow?.option_index ?? null,
         tallies,
+        archived: p.archived || false,
       };
     });
 
@@ -599,7 +685,7 @@ export default function SquadPage({ navigateTo }) {
   async function loadThreads(squadId) {
     const { data: threadRows } = await supabase
       .from('threads')
-      .select('id, title, created_at, user_id')
+      .select('id, title, created_at, user_id, archived')
       .eq('squad_id', squadId)
       .order('created_at', { ascending: false });
 
@@ -630,6 +716,7 @@ export default function SquadPage({ navigateTo }) {
       title: t.title,
       author: profileMap[t.user_id] || 'unknown',
       date: formatDate(t.created_at),
+      archived: t.archived || false,
       replies: (replyRows || [])
         .filter(r => r.thread_id === t.id)
         .map(r => ({
@@ -794,10 +881,15 @@ export default function SquadPage({ navigateTo }) {
   }
 
   async function insertNotifications(userIds, squadId, type, body) {
-    if (!userIds.length) return;
-    await supabase.from('notifications').insert(
+    if (!userIds.length) {
+      console.warn('[notifications] insertNotifications: no recipients for type', type);
+      return;
+    }
+    const { error } = await supabase.from('notifications').insert(
       userIds.map(userId => ({ user_id: userId, squad_id: squadId, type, body }))
     );
+    if (error) console.error('[notifications] insert error:', error);
+    else console.log('[notifications] inserted', userIds.length, 'notification(s) of type', type);
   }
 
   // TODO: mentioned_in_thread — trigger when a reply body is saved.
@@ -862,10 +954,10 @@ export default function SquadPage({ navigateTo }) {
 
     if (error) { setSubmitting(false); return; }
 
-    await supabase.from('squad_members').insert({ squad_id: squad.id, user_id: user.id });
+    await supabase.from('squad_members').insert({ squad_id: squad.id, user_id: user.id, role: 'admin' });
 
     for (const m of invitedMembers) {
-      await supabase.from('squad_members').insert({ squad_id: squad.id, user_id: m.id });
+      await supabase.from('squad_members').insert({ squad_id: squad.id, user_id: m.id, role: 'member' });
     }
 
     await loadSquads();
@@ -918,8 +1010,11 @@ export default function SquadPage({ navigateTo }) {
     if (!error) {
       await loadPolls(resolvedId);
       const recipientIds = await getSubscribedMemberIds(resolvedId, 'poll_created');
+      console.log('[notifications] poll_created recipients:', recipientIds, 'squad members:', currentSquad?.members?.map(m => m.user_id));
       await insertNotifications(recipientIds, resolvedId, 'poll_created',
         `${currentUser} started a new poll in ${currentSquad.name}: ${question}`);
+    } else {
+      console.error('[notifications] createPoll insert error:', error);
     }
   }
 
@@ -985,6 +1080,41 @@ export default function SquadPage({ navigateTo }) {
     await insertNotifications(recipientIds, squadId, 'game_night_scheduled',
       `Game night in ${squad?.name || 'your squad'} is scheduled for ${formattedDate}`);
     setMeetupInput('');
+  }
+
+  async function setMemberRole(squadId, memberId, role) {
+    setSquads(prev => prev.map(s => {
+      if (s.id !== squadId) return s;
+      return { ...s, members: s.members.map(m => m.user_id === memberId ? { ...m, role } : m) };
+    }));
+    await supabase.from('squad_members').update({ role }).eq('squad_id', squadId).eq('user_id', memberId);
+  }
+
+  async function archivePoll(pollId, archived) {
+    const poll = polls.find(p => p.id === pollId);
+    setPolls(prev => prev.map(p => p.id === pollId ? { ...p, archived } : p));
+    await supabase.from('polls').update({ archived }).eq('id', pollId);
+    if (archived && poll) {
+      const memberIds = currentSquad?.members.map(m => m.user_id).filter(id => id !== user.id) || [];
+      await insertNotifications(memberIds, resolvedId, 'poll_archived',
+        `${currentUser} archived a poll in ${currentSquad.name}: ${poll.question}`);
+    }
+  }
+
+  async function archiveThread(threadId, archived) {
+    const thread = threads.find(t => t.id === threadId);
+    setThreads(prev => prev.map(t => t.id === threadId ? { ...t, archived } : t));
+    await supabase.from('threads').update({ archived }).eq('id', threadId);
+    if (archived && thread) {
+      const memberIds = currentSquad?.members.map(m => m.user_id).filter(id => id !== user.id) || [];
+      await insertNotifications(memberIds, resolvedId, 'thread_archived',
+        `${currentUser} archived a thread in ${currentSquad.name}: ${thread.title}`);
+    }
+  }
+
+  async function saveSquadAppearance(field, value) {
+    setSquads(prev => prev.map(s => s.id === resolvedId ? { ...s, [field]: value } : s));
+    await supabase.from('squads').update({ [field]: value }).eq('id', resolvedId);
   }
 
   // ── render ────────────────────────────────────────────────────────────────
@@ -1124,7 +1254,7 @@ export default function SquadPage({ navigateTo }) {
                             borderBottom: i < unread.length - 1 || read.length > 0 ? `1px solid ${colors.border}` : 'none',
                             cursor: 'pointer',
                             background: '#FFF8F3',
-                            borderLeft: `3px solid ${colors.orange}`,
+                            borderLeft: `3px solid ${squadAccentColor || colors.orange}`,
                             transition: 'background 0.12s',
                           }}
                           onMouseEnter={e => e.currentTarget.style.background = '#FFF0E6'}
@@ -1265,11 +1395,11 @@ export default function SquadPage({ navigateTo }) {
 
         {/* Squad view */}
         {currentSquad && !creating && (
-          <div>
+          <div style={squadBgColor ? { background: squadBgColor, borderRadius: 12, padding: '16px', margin: '-4px' } : {}}>
             {/* Squad header */}
             <div style={{ marginBottom: 24 }}>
               <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12, marginBottom: 16 }}>
-                <h1 style={{ fontFamily: fonts.pixel, fontSize: 12, color: colors.text, margin: 0, lineHeight: 1.6 }}>
+                <h1 style={{ fontFamily: fonts.pixel, fontSize: 12, color: squadAccentColor || colors.text, margin: 0, lineHeight: 1.6 }}>
                   {currentSquad.name}
                 </h1>
                 <button
@@ -1342,6 +1472,94 @@ export default function SquadPage({ navigateTo }) {
               {/* Inline Settings Panel */}
               {showSettings && (
                 <div style={{ ...card, padding: '18px 22px', marginTop: 16, background: colors.lightBg }}>
+
+                  {/* ── Members (admin only) ── */}
+                  {isAdmin && (
+                    <>
+                      <div style={{ fontFamily: fonts.body, fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.8px', color: colors.muted, marginBottom: 12 }}>
+                        Members
+                      </div>
+                      {currentSquad.members.map(m => (
+                        <div key={m.user_id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 0', borderBottom: `1px solid ${colors.border}` }}>
+                          <MemberAvatar name={m.username} size={28} isYou={m.user_id === user?.id} />
+                          <span style={{ fontFamily: fonts.body, fontSize: 14, color: colors.text, flex: 1 }}>{m.username}{m.user_id === user?.id ? ' (you)' : ''}</span>
+                          <span style={{
+                            fontFamily: fonts.body, fontSize: 11, fontWeight: 700,
+                            padding: '2px 8px', borderRadius: 10,
+                            background: m.role === 'admin' ? colors.navy : colors.border,
+                            color: m.role === 'admin' ? colors.white : colors.muted,
+                          }}>
+                            {m.role}
+                          </span>
+                          {m.user_id !== user?.id && m.role !== 'admin' && (
+                            <button
+                              onClick={() => setMemberRole(resolvedId, m.user_id, 'admin')}
+                              style={{ ...button.ghost, fontSize: 11, padding: '3px 8px' }}
+                            >
+                              Make admin
+                            </button>
+                          )}
+                          {m.user_id !== user?.id && m.role === 'admin' && (
+                            <button
+                              onClick={() => setMemberRole(resolvedId, m.user_id, 'member')}
+                              style={{ ...button.ghost, fontSize: 11, padding: '3px 8px', color: colors.muted, borderColor: colors.border }}
+                            >
+                              Remove admin
+                            </button>
+                          )}
+                        </div>
+                      ))}
+                      {/* TODO: Membership requests — approve/deny flow
+                          Query: SELECT * FROM membership_requests WHERE squad_id = resolvedId AND status = 'pending'
+                          Approve: update status='approved', insert into squad_members with role='member'
+                          Deny: update status='denied'
+                          Show pending count as a badge next to "Membership requests" label */}
+                      <div style={{ padding: '8px 0', fontFamily: fonts.body, fontSize: 13, color: colors.muted, fontStyle: 'italic' }}>
+                        Membership requests — coming soon
+                      </div>
+                      <div style={{ height: 1, background: colors.border, margin: '16px 0' }} />
+                    </>
+                  )}
+
+                  {/* ── Appearance (admin only) ── */}
+                  {isAdmin && (
+                    <>
+                      <div style={{ fontFamily: fonts.body, fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.8px', color: colors.muted, marginBottom: 12 }}>
+                        Appearance
+                      </div>
+                      {[
+                        { field: 'background_color', label: 'Background Color', value: squadBgColor },
+                        { field: 'accent_color',     label: 'Accent Color',     value: squadAccentColor },
+                      ].map(({ field, label, value }) => (
+                        <div key={field} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '8px 0', borderBottom: `1px solid ${colors.border}` }}>
+                          <span style={{ fontFamily: fonts.body, fontSize: 14, color: colors.text }}>{label}</span>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                            {value && (
+                              <span style={{ display: 'inline-block', width: 18, height: 18, borderRadius: 4, background: value, border: `1px solid ${colors.border}` }} />
+                            )}
+                            <input
+                              type="color"
+                              value={value || (field === 'accent_color' ? '#1B2A4A' : '#F5F2EC')}
+                              onChange={e => saveSquadAppearance(field, e.target.value)}
+                              style={{ width: 36, height: 28, padding: 0, border: `1px solid ${colors.border}`, borderRadius: 4, cursor: 'pointer', background: 'none' }}
+                            />
+                            {value && (
+                              <button
+                                onClick={() => saveSquadAppearance(field, null)}
+                                title="Reset to default"
+                                style={{ ...button.ghost, padding: '3px 8px', fontSize: 12, color: colors.muted, borderColor: colors.border }}
+                              >
+                                ×
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      ))}
+                      <div style={{ height: 1, background: colors.border, margin: '16px 0' }} />
+                    </>
+                  )}
+
+                  {/* ── Notifications ── */}
                   <div style={{ fontFamily: fonts.body, fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.8px', color: colors.muted, marginBottom: 14 }}>
                     Notifications
                   </div>
@@ -1493,18 +1711,39 @@ export default function SquadPage({ navigateTo }) {
                     Polls
                   </h2>
                   <CreatePollForm onCreate={createPoll} />
-                  {polls.length === 0 && (
+                  {polls.filter(p => !p.archived).length === 0 && (
                     <p style={{ fontFamily: fonts.body, fontSize: 13, color: colors.muted, textAlign: 'center', padding: '4px 0 8px' }}>
                       No polls yet. Create one above!
                     </p>
                   )}
-                  {polls.map(poll => (
+                  {polls.filter(p => !p.archived).map(poll => (
                     <PollSection
                       key={poll.id}
                       poll={poll}
                       castVote={i => castVote(poll.id, i)}
+                      isAdmin={isAdmin}
+                      onArchive={archivePoll}
+                      accentColor={squadAccentColor}
                     />
                   ))}
+                  {/* Archived polls — admin only */}
+                  {isAdmin && polls.filter(p => p.archived).length > 0 && (
+                    <div style={{ marginTop: 16 }}>
+                      <div style={{ fontFamily: fonts.body, fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.6px', color: colors.muted, marginBottom: 8 }}>
+                        Archived Polls
+                      </div>
+                      {polls.filter(p => p.archived).map(poll => (
+                        <PollSection
+                          key={poll.id}
+                          poll={poll}
+                          castVote={i => castVote(poll.id, i)}
+                          isAdmin={isAdmin}
+                          onArchive={archivePoll}
+                          accentColor={squadAccentColor}
+                        />
+                      ))}
+                    </div>
+                  )}
                 </div>
 
                 {/* Next Meetup */}
@@ -1556,6 +1795,8 @@ export default function SquadPage({ navigateTo }) {
                     onCreateThread={createThread}
                     onAddReply={addReply}
                     currentUser={currentUser}
+                    isAdmin={isAdmin}
+                    onArchive={archiveThread}
                   />
                 </div>
               </>
