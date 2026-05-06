@@ -852,6 +852,7 @@ export default function SquadPage({ navigateTo }) {
   const [meetupInput, setMeetupInput] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
   const [notifPrefs, setNotifPrefs] = useState({
     poll_created: true, poll_closing_soon: true, game_night_scheduled: true,
     thread_created: true, mentioned_in_thread: true, replied_in_thread: true,
@@ -1067,12 +1068,15 @@ export default function SquadPage({ navigateTo }) {
 
   async function loadNotifications() {
     setNotifsLoading(true);
-    const { data: rows } = await supabase
+    // [DEBUG 3+4] log current user id before fetching
+    console.log('[notifs] fetching for user.id:', user.id);
+    const { data: rows, error: notifsError } = await supabase
       .from('notifications')
       .select('id, squad_id, type, body, read, created_at, action_type, action_id')
       .eq('user_id', user.id)
       .order('created_at', { ascending: false })
       .limit(30);
+    console.log('[notifs] raw rows:', rows, 'error:', notifsError);
 
     if (!rows?.length) { setNotifications([]); setNotifsLoading(false); return; }
 
@@ -1130,7 +1134,7 @@ export default function SquadPage({ navigateTo }) {
       .select('*')
       .eq('user_id', user.id)
       .eq('squad_id', squadId)
-      .single();
+      .maybeSingle();
     setNotifPrefs(data ? {
       poll_created: data.poll_created,
       poll_closing_soon: data.poll_closing_soon,
@@ -1211,6 +1215,7 @@ export default function SquadPage({ navigateTo }) {
     setNewMembers([]);
     setSquadWishlist([]);
     setShowSettings(false);
+    setConfirmDelete(false);
     setDetailLoading(true);
     Promise.all([
       loadPolls(resolvedId),
@@ -1394,6 +1399,14 @@ export default function SquadPage({ navigateTo }) {
     }
   }
 
+  async function deleteSquad(squadId) {
+    await supabase.from('squads').delete().eq('id', squadId);
+    setSquads(prev => prev.filter(s => s.id !== squadId));
+    setActiveSquadId(null);
+    setShowSettings(false);
+    setConfirmDelete(false);
+  }
+
   async function saveSquadAppearance(field, value) {
     setSquads(prev => prev.map(s => s.id === resolvedId ? { ...s, [field]: value } : s));
     await supabase.from('squads').update({ [field]: value }).eq('id', resolvedId);
@@ -1428,25 +1441,33 @@ export default function SquadPage({ navigateTo }) {
   }
 
   async function requestToJoin(squadId, squadName) {
-    const { data: req, error } = await supabase
+    // [DEBUG 1] membership_request insert
+    console.log('[join-request] inserting membership_request', { squadId, userId: user.id, direction: 'request' });
+    const { data: req, error: reqError } = await supabase
       .from('membership_requests')
       .insert({ squad_id: squadId, user_id: user.id, direction: 'request', status: 'pending' })
       .select('id')
       .single();
-    if (error) return { error: 'Failed to send request' };
+    console.log('[join-request] membership_request result:', { req, error: reqError });
+    if (reqError) return { error: 'Failed to send request' };
 
-    const { data: adminRows } = await supabase
+    // [DEBUG 2] admin query
+    const { data: adminRows, error: adminError } = await supabase
       .from('squad_members')
       .select('user_id')
       .eq('squad_id', squadId)
       .eq('role', 'admin');
+    console.log('[join-request] admin query result:', { adminRows, adminError, squadId });
     const adminIds = (adminRows || []).map(r => r.user_id);
+    console.log('[join-request] notifying admin IDs:', adminIds);
     if (adminIds.length) {
       await insertNotifications(
         adminIds, squadId, 'join_request',
         `${currentUser} has requested to join ${squadName}`,
         { action_type: 'membership_request', action_id: req.id }
       );
+    } else {
+      console.warn('[join-request] no admins found — notification will not be sent');
     }
     return { success: true };
   }
@@ -2023,6 +2044,44 @@ export default function SquadPage({ navigateTo }) {
                       </div>
                     </div>
                   ))}
+
+                  {/* ── Danger Zone (admin only) ── */}
+                  {isAdmin && (
+                    <>
+                      <div style={{ height: 1, background: colors.border, margin: '16px 0' }} />
+                      <div style={{ fontFamily: fonts.body, fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.8px', color: '#C0392B', marginBottom: 12 }}>
+                        Danger Zone
+                      </div>
+                      {confirmDelete ? (
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                          <p style={{ fontFamily: fonts.body, fontSize: 13, color: colors.text, margin: 0 }}>
+                            Delete <strong>{currentSquad.name}</strong>? This removes the squad, all its polls, threads, and member data permanently.
+                          </p>
+                          <div style={{ display: 'flex', gap: 8 }}>
+                            <button
+                              onClick={() => deleteSquad(currentSquad.id)}
+                              style={{ ...button.danger, fontWeight: 700 }}
+                            >
+                              Yes, delete squad
+                            </button>
+                            <button
+                              onClick={() => setConfirmDelete(false)}
+                              style={button.ghost}
+                            >
+                              Cancel
+                            </button>
+                          </div>
+                        </div>
+                      ) : (
+                        <button
+                          onClick={() => setConfirmDelete(true)}
+                          style={{ ...button.danger }}
+                        >
+                          Delete Squad
+                        </button>
+                      )}
+                    </>
+                  )}
                 </div>
               )}
             </div>
