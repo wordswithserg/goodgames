@@ -126,6 +126,7 @@ function ReviewCard({ review, voteData = { up: 0, down: 0, mine: null }, onVote,
   const [isEditing, setIsEditing] = useState(false);
   const [editRating, setEditRating] = useState(review.rating);
   const [editBody, setEditBody] = useState(review.body || '');
+  const [showHistory, setShowHistory] = useState(false);
 
   const isEdited = !!review.edited_at;
   const editCount = review.edits?.length ?? 0;
@@ -224,24 +225,44 @@ function ReviewCard({ review, voteData = { up: 0, down: 0, mine: null }, onVote,
             </p>
           )}
 
-          {isEdited && editCount > 0 && (
-            <div style={{ marginBottom: 10, borderLeft: `2px solid ${colors.border}`, paddingLeft: 12 }}>
-              {review.edits.map((edit, i) => (
-                <div key={i} style={{ marginBottom: i < review.edits.length - 1 ? 10 : 0 }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 3 }}>
-                    <StarDisplay rating={edit.rating} size={11} />
-                    <span style={{ fontFamily: fonts.body, fontSize: 11, color: colors.muted }}>
-                      v{i + 1} · {new Date(edit.edited_at).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' })}
-                    </span>
-                  </div>
-                  {edit.body && (
-                    <p style={{ fontFamily: fonts.body, fontSize: 13, color: colors.muted, margin: 0, lineHeight: 1.55, fontStyle: 'italic' }}>
-                      {edit.body}
-                    </p>
-                  )}
+          {editCount > 0 && (
+            <>
+              <button
+                onClick={() => setShowHistory(s => !s)}
+                style={{
+                  background: 'none',
+                  border: 'none',
+                  cursor: 'pointer',
+                  fontFamily: fonts.body,
+                  fontSize: 12,
+                  color: colors.muted,
+                  padding: 0,
+                  marginBottom: 10,
+                  textDecoration: 'underline',
+                }}
+              >
+                {showHistory ? 'Hide comment history' : 'Show comment history'}
+              </button>
+              {showHistory && (
+                <div style={{ marginBottom: 10, borderLeft: `2px solid ${colors.border}`, paddingLeft: 12 }}>
+                  {review.edits.map((edit, i) => (
+                    <div key={i} style={{ marginBottom: i < review.edits.length - 1 ? 10 : 0 }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 3 }}>
+                        <StarDisplay rating={edit.rating} size={11} />
+                        <span style={{ fontFamily: fonts.body, fontSize: 11, color: colors.muted }}>
+                          v{i + 1} · {new Date(edit.edited_at).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' })}
+                        </span>
+                      </div>
+                      {edit.body && (
+                        <p style={{ fontFamily: fonts.body, fontSize: 13, color: colors.muted, margin: 0, lineHeight: 1.55, fontStyle: 'italic' }}>
+                          {edit.body}
+                        </p>
+                      )}
+                    </div>
+                  ))}
                 </div>
-              ))}
-            </div>
+              )}
+            </>
           )}
 
           <div style={{ display: 'flex', gap: 8 }}>
