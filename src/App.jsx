@@ -6,6 +6,7 @@ import Nav from './components/Nav';
 import Home from './pages/Home';
 import GamePage from './pages/GamePage';
 import PlayerPage from './pages/PlayerPage';
+import ProfilePage from './pages/ProfilePage';
 import SquadPage from './pages/SquadPage';
 import SettingsPage from './pages/SettingsPage';
 import ResetPasswordPage from './pages/ResetPasswordPage';
@@ -31,19 +32,37 @@ export default function App() {
     const id = load('gg_selectedGameId', null);
     return id ? (getGameById(id) ?? null) : null;
   });
+  const [selectedProfile, setSelectedProfile] = useState(() => {
+    const id = load('gg_selectedProfileId', null);
+    const page = load('gg_currentPage', 'home');
+    return id && page === 'profile' ? { id, username: null } : null;
+  });
+
   useEffect(() => { localStorage.setItem('gg_currentPage', JSON.stringify(currentPage)); }, [currentPage]);
   useEffect(() => { localStorage.setItem('gg_selectedGameId', JSON.stringify(selectedGame?.id ?? null)); }, [selectedGame]);
+  useEffect(() => { localStorage.setItem('gg_selectedProfileId', JSON.stringify(selectedProfile?.id ?? null)); }, [selectedProfile]);
 
-  function navigateTo(page, game = null) {
-    setCurrentPage(game ? 'game' : page);
-    setSelectedGame(game);
+  function navigateTo(page, data = null) {
+    if (page === 'game') {
+      setCurrentPage('game');
+      setSelectedGame(data);
+      setSelectedProfile(null);
+    } else if (page === 'profile') {
+      setCurrentPage('profile');
+      setSelectedProfile(data);
+      setSelectedGame(null);
+    } else {
+      setCurrentPage(page);
+      setSelectedGame(null);
+      setSelectedProfile(null);
+    }
     window.scrollTo({ top: 0, behavior: 'smooth' });
   }
 
   return (
     <div style={{ minHeight: '100vh', background: `var(--page-bg, ${colors.bg})` }}>
       <Nav
-        currentPage={currentPage === 'game' ? null : currentPage}
+        currentPage={['game', 'profile'].includes(currentPage) ? null : currentPage}
         navigateTo={navigateTo}
       />
       <main>
@@ -55,6 +74,9 @@ export default function App() {
         )}
         {currentPage === 'player' && (
           <PlayerPage navigateTo={navigateTo} />
+        )}
+        {currentPage === 'profile' && selectedProfile && (
+          <ProfilePage userId={selectedProfile.id} navigateTo={navigateTo} />
         )}
         {currentPage === 'squad' && (
           <SquadPage navigateTo={navigateTo} />

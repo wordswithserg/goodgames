@@ -39,3 +39,7 @@ input, select, textarea, button {
 ::-webkit-scrollbar-thumb:hover {
   background: #AAA;
 }
+
+.nav-search::placeholder {
+  color: rgba(255,255,255,0.5);
+}
