@@ -409,15 +409,7 @@ function CreatePollForm({ onCreate }) {
 function ThreadSection({ threads, onCreateThread, onAddReply, currentUser, isAdmin, onArchive }) {
   const [newTitle, setNewTitle] = useState('');
   const [replyText, setReplyText] = useState({});
-  const [openThreads, setOpenThreads] = useState(() => new Set(threads.map(t => t.id)));
-
-  useEffect(() => {
-    setOpenThreads(prev => {
-      const next = new Set(prev);
-      threads.forEach(t => { if (!prev.has(t.id)) next.add(t.id); });
-      return next;
-    });
-  }, [threads]);
+  const [openThreads, setOpenThreads] = useState(() => new Set());
 
   function createThread() {
     if (!newTitle.trim()) return;
