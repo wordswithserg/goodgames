@@ -206,25 +206,22 @@ export default function Nav({ currentPage, navigateTo }) {
           marginRight: 8,
         }}
       >
-        <span style={{
-          fontFamily: fonts.pixel,
-          fontSize: 12,
-          color: colors.bg,
-        }}>
-          ark<span style={{ color: colors.yellow }}>ade</span>
-        </span>
-        <span style={{
-          background: colors.orange,
-          color: colors.white,
-          borderRadius: 4,
-          fontSize: 10,
-          fontWeight: 700,
-          padding: '2px 6px',
-          fontFamily: fonts.body,
-          letterSpacing: '0.5px',
-        }}>
-          BETA
-        </span>
+        <div style={{ height: 38, width: 200, overflow: 'hidden', position: 'relative', flexShrink: 0 }}>
+          <img
+            src="/goodgames-05.png"
+            alt="GoodGames"
+            style={{
+              position: 'absolute',
+              height: 220,
+              width: 'auto',
+              top: '50%',
+              left: '50%',
+              transform: 'translate(-50%, -50%)',
+              filter: 'brightness(0) invert(1)',
+              maxWidth: 'none',
+            }}
+          />
+        </div>
       </button>
 
       {/* Page links */}
