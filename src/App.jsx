@@ -3,6 +3,7 @@ import { colors } from './styles/theme';
 import { useAuth } from './contexts/AuthContext';
 import { getGameById } from './data/games';
 import Nav from './components/Nav';
+import LoadingScreen from './components/LoadingScreen';
 import Home from './pages/Home';
 import GamePage from './pages/GamePage';
 import PlayerPage from './pages/PlayerPage';
@@ -23,6 +24,7 @@ function load(key, fallback) {
 export default function App() {
   const { profile } = useAuth();
   const currentUser = profile?.username || null;
+  const [showLoading, setShowLoading] = useState(true);
 
   const [currentPage, setCurrentPage] = useState(() => {
     if (window.location.pathname === '/reset-password') return 'reset-password';
@@ -61,6 +63,7 @@ export default function App() {
 
   return (
     <div style={{ minHeight: '100vh', background: `var(--page-bg, ${colors.bg})` }}>
+      {showLoading && <LoadingScreen onComplete={() => setShowLoading(false)} />}
       <Nav
         currentPage={['game', 'profile'].includes(currentPage) ? null : currentPage}
         navigateTo={navigateTo}
