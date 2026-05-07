@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { colors, fonts, card, button } from '../styles/theme';
 import { supabase } from '../lib/supabase';
-import { getGameById } from '../data/games';
+import { games } from '../data/games';
 import { getGameById as getIgdbGame } from '../lib/igdb';
 import { GENRE_COLORS, StarDisplay } from '../components/GameCard';
 
@@ -11,6 +11,15 @@ function contrastFor(hex) {
   const g = parseInt(hex.slice(3, 5), 16);
   const b = parseInt(hex.slice(5, 7), 16);
   return 0.299 * r + 0.587 * g + 0.114 * b > 140 ? '#1A1A1A' : '#FFFFFF';
+}
+
+function getLocalGame(id) {
+  return games.find(g => String(g.id) === String(id)) || null;
+}
+
+function resolveGame(id, igdbMap) {
+  if (!id) return null;
+  return String(id).startsWith('igdb_') ? (igdbMap[id] || null) : getLocalGame(id);
 }
 
 function SectionHeader({ children }) {
@@ -28,13 +37,31 @@ function SectionHeader({ children }) {
   );
 }
 
+function CoverThumb({ game, width = 32, height = 32, radius = 6 }) {
+  return (
+    <div style={{
+      width, height, borderRadius: radius, flexShrink: 0,
+      background: game.coverColor || colors.navy,
+      overflow: 'hidden', position: 'relative',
+    }}>
+      {game.coverUrl && (
+        <img src={game.coverUrl} alt={game.title} style={{ width: '100%', height: '100%', objectFit: 'cover', position: 'absolute', inset: 0 }} />
+      )}
+    </div>
+  );
+}
+
 export default function ProfilePage({ userId, navigateTo }) {
   const [profile, setProfile] = useState(null);
   const [top10Ids, setTop10Ids] = useState([]);
-  const [top10IgdbGames, setTop10IgdbGames] = useState({});
   const [reviews, setReviews] = useState([]);
-  const [reviewGameInfo, setReviewGameInfo] = useState({});
+  const [genreFavSlots, setGenreFavSlots] = useState([]);
+  const [aboutAnswers, setAboutAnswers] = useState([]);
+  const [wishlistIds, setWishlistIds] = useState([]);
   const [loading, setLoading] = useState(true);
+
+  // IGDB resolution maps
+  const [igdbGames, setIgdbGames] = useState({});
 
   useEffect(() => {
     if (!userId) return;
@@ -43,46 +70,53 @@ export default function ProfilePage({ userId, navigateTo }) {
     setProfile(null);
     setTop10Ids([]);
     setReviews([]);
-    setTop10IgdbGames({});
-    setReviewGameInfo({});
+    setGenreFavSlots([]);
+    setAboutAnswers([]);
+    setWishlistIds([]);
+    setIgdbGames({});
 
     async function fetchAll() {
-      const [profileRes, top10Res, reviewsRes] = await Promise.all([
-        supabase.from('profiles').select('username, avatar_url, bg_color').eq('id', userId).single(),
+      const [profileRes, top10Res, reviewsRes, genreFavsRes, aboutRes, wishlistRes] = await Promise.all([
+        supabase.from('profiles').select('username, avatar_url, bg_color, now_playing_game_id').eq('id', userId).single(),
         supabase.from('top10').select('game_id, rank').eq('user_id', userId).order('rank', { ascending: true }).limit(10),
-        supabase.from('reviews').select('id, game_id, rating, body, created_at').eq('user_id', userId).order('created_at', { ascending: false }).limit(5),
+        supabase.from('reviews').select('id, game_id, rating, body, created_at').eq('user_id', userId).order('created_at', { ascending: false }).limit(3),
+        supabase.from('genre_favorites').select('genre, game_id, genre_id, genre_name').eq('user_id', userId),
+        supabase.from('about_me').select('question_key, answer').eq('user_id', userId).limit(3),
+        supabase.from('wishlist').select('game_id').eq('user_id', userId),
       ]);
       if (cancelled) return;
       setProfile(profileRes.data || null);
       setTop10Ids((top10Res.data || []).map(r => r.game_id));
       setReviews(reviewsRes.data || []);
+      setGenreFavSlots((genreFavsRes.data || []).sort((a, b) => a.genre - b.genre));
+      setAboutAnswers((aboutRes.data || []).map(r => ({ question: r.question_key, answer: r.answer })));
+      setWishlistIds((wishlistRes.data || []).map(r => r.game_id));
       setLoading(false);
     }
     fetchAll();
     return () => { cancelled = true; };
   }, [userId]);
 
+  // Resolve all IGDB ids from all sections in one effect
   useEffect(() => {
-    const igdbIds = [...new Set(top10Ids.filter(id => String(id).startsWith('igdb_')))];
-    if (!igdbIds.length) return;
-    Promise.all(igdbIds.map(id => getIgdbGame(id).then(g => g ? [id, g] : null)))
+    if (loading) return;
+    const nowPlayingId = profile?.now_playing_game_id;
+    const allIds = [
+      ...(nowPlayingId && String(nowPlayingId).startsWith('igdb_') ? [nowPlayingId] : []),
+      ...top10Ids.filter(id => String(id).startsWith('igdb_')),
+      ...reviews.map(r => r.game_id).filter(id => String(id).startsWith('igdb_')),
+      ...genreFavSlots.map(s => s.game_id).filter(id => id && String(id).startsWith('igdb_')),
+      ...wishlistIds.filter(id => String(id).startsWith('igdb_')),
+    ];
+    const uniqueIds = [...new Set(allIds)];
+    if (!uniqueIds.length) return;
+    Promise.all(uniqueIds.map(id => getIgdbGame(id).then(g => g ? [id, g] : null)))
       .then(results => {
         const map = {};
         results.filter(Boolean).forEach(([id, g]) => { map[id] = g; });
-        setTop10IgdbGames(prev => ({ ...prev, ...map }));
+        setIgdbGames(prev => ({ ...prev, ...map }));
       });
-  }, [top10Ids]);
-
-  useEffect(() => {
-    const igdbIds = [...new Set(reviews.map(r => r.game_id).filter(id => String(id).startsWith('igdb_')))];
-    if (!igdbIds.length) return;
-    Promise.all(igdbIds.map(id => getIgdbGame(id).then(g => g ? [id, g] : null)))
-      .then(results => {
-        const map = {};
-        results.filter(Boolean).forEach(([id, g]) => { map[id] = g; });
-        setReviewGameInfo(prev => ({ ...prev, ...map }));
-      });
-  }, [reviews]);
+  }, [loading, profile?.now_playing_game_id, top10Ids, reviews, genreFavSlots, wishlistIds]); // eslint-disable-line
 
   if (loading) return null;
 
@@ -97,8 +131,9 @@ export default function ProfilePage({ userId, navigateTo }) {
     );
   }
 
-  const avatarBg = profile.bg_color || colors.navy;
-  const avatarText = contrastFor(avatarBg);
+  const nowPlayingGame = resolveGame(profile.now_playing_game_id, igdbGames);
+  const headerFg = contrastFor(profile.bg_color || null);
+  const isHeaderDark = profile.bg_color && headerFg === '#FFFFFF';
   const initial = profile.username?.[0]?.toUpperCase() || '?';
 
   return (
@@ -109,124 +144,119 @@ export default function ProfilePage({ userId, navigateTo }) {
 
       {/* Profile header */}
       <div style={{
-        ...card,
-        padding: '24px 28px',
+        display: 'flex', alignItems: 'center', gap: 16,
         marginBottom: 24,
-        background: profile.bg_color || colors.white,
-        display: 'flex',
-        alignItems: 'center',
-        gap: 20,
+        ...(profile.bg_color ? {
+          background: profile.bg_color,
+          padding: '20px 24px',
+          borderRadius: 12,
+        } : {
+          ...card,
+          padding: '20px 24px',
+        }),
       }}>
         {profile.avatar_url ? (
-          <img
-            src={profile.avatar_url}
-            alt={profile.username}
-            style={{ width: 64, height: 64, borderRadius: '50%', objectFit: 'cover', flexShrink: 0, border: `3px solid ${avatarText === '#FFFFFF' ? 'rgba(255,255,255,0.3)' : 'rgba(0,0,0,0.1)'}` }}
-          />
+          <img src={profile.avatar_url} alt={profile.username} style={{ width: 52, height: 52, borderRadius: '50%', objectFit: 'cover', flexShrink: 0 }} />
         ) : (
           <div style={{
-            width: 64, height: 64, borderRadius: '50%',
-            background: avatarText === '#FFFFFF' ? 'rgba(255,255,255,0.2)' : 'rgba(0,0,0,0.12)',
+            width: 52, height: 52, borderRadius: '50%', flexShrink: 0,
+            background: isHeaderDark ? 'rgba(255,255,255,0.2)' : colors.navy,
+            color: isHeaderDark ? headerFg : colors.white,
             display: 'flex', alignItems: 'center', justifyContent: 'center',
-            fontFamily: fonts.body, fontWeight: 700, fontSize: 26,
-            color: avatarText, flexShrink: 0,
+            fontFamily: fonts.heading, fontWeight: 700, fontSize: 22,
           }}>
             {initial}
           </div>
         )}
         <div>
-          <div style={{ fontFamily: fonts.pixel, fontSize: 13, color: avatarText, lineHeight: 1.6 }}>
+          <h1 style={{ fontFamily: fonts.pixel, fontSize: 11, color: profile.bg_color ? headerFg : colors.text, margin: 0, lineHeight: 1.6 }}>
             {profile.username}
+          </h1>
+          <div style={{ fontFamily: fonts.body, fontSize: 13, color: profile.bg_color ? (isHeaderDark ? 'rgba(255,255,255,0.6)' : 'rgba(0,0,0,0.5)') : colors.muted, marginTop: 2 }}>
+            {top10Ids.length} in top 10 · {wishlistIds.length} wishlisted
           </div>
         </div>
       </div>
 
+      {/* Now Playing */}
+      {nowPlayingGame && (
+        <div
+          onClick={() => navigateTo('game', nowPlayingGame)}
+          style={{ borderRadius: 12, overflow: 'hidden', height: 200, position: 'relative', background: nowPlayingGame.coverColor || colors.navy, marginBottom: 20, cursor: 'pointer' }}
+        >
+          {nowPlayingGame.coverUrl && (
+            <div style={{ position: 'absolute', inset: 0, backgroundImage: `url(${nowPlayingGame.coverUrl})`, backgroundSize: 'cover', backgroundPosition: 'center', filter: 'blur(14px)', transform: 'scale(1.12)' }} />
+          )}
+          <div style={{ position: 'absolute', inset: 0, background: 'rgba(0,0,0,0.58)' }} />
+          <div style={{ position: 'relative', zIndex: 1, height: '100%', display: 'flex', flexDirection: 'column', justifyContent: 'space-between', padding: '18px 24px' }}>
+            <div style={{ fontFamily: fonts.body, fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '1.2px', color: 'rgba(255,255,255,0.55)' }}>
+              Now Playing
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 18 }}>
+              <div style={{ width: 64, height: 86, borderRadius: 6, flexShrink: 0, background: nowPlayingGame.coverColor || colors.navy, overflow: 'hidden', boxShadow: '0 4px 20px rgba(0,0,0,0.6)' }}>
+                {nowPlayingGame.coverUrl && <img src={nowPlayingGame.coverUrl} alt={nowPlayingGame.title} style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} />}
+              </div>
+              <div>
+                <div style={{ fontFamily: fonts.pixel, fontSize: 11, color: colors.white, lineHeight: 1.8, marginBottom: 4 }}>{nowPlayingGame.title}</div>
+                {nowPlayingGame.year && <div style={{ fontFamily: fonts.body, fontSize: 13, color: 'rgba(255,255,255,0.55)' }}>{nowPlayingGame.year}</div>}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Top 10 */}
       {top10Ids.length > 0 && (
-        <div style={{ ...card, padding: '20px 24px', marginBottom: 24 }}>
+        <div style={{ ...card, padding: '20px 24px', marginBottom: 20 }}>
           <SectionHeader>Top 10 Games</SectionHeader>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-            {top10Ids.map((gameId, index) => {
-              const game = String(gameId).startsWith('igdb_')
-                ? top10IgdbGames[gameId]
-                : getGameById(gameId);
-              if (!game) return null;
-              const gc = GENRE_COLORS[game.genre] || { bg: '#EEE', text: '#555' };
-              return (
-                <div
-                  key={gameId}
-                  onClick={() => navigateTo('game', game)}
-                  style={{ display: 'flex', alignItems: 'center', gap: 14, cursor: 'pointer', padding: '6px 8px', borderRadius: 6 }}
-                  onMouseEnter={e => e.currentTarget.style.background = colors.lightBg}
-                  onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
-                >
-                  <span style={{ fontFamily: fonts.pixel, fontSize: 9, color: colors.muted, width: 20, textAlign: 'right', flexShrink: 0 }}>
-                    {index + 1}
-                  </span>
-                  <div style={{
-                    width: 36, height: 48, borderRadius: 5, flexShrink: 0,
-                    background: game.coverColor || colors.navy,
-                    overflow: 'hidden', position: 'relative',
-                  }}>
-                    {game.coverUrl && (
-                      <img src={game.coverUrl} alt={game.title} style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover' }} />
-                    )}
-                  </div>
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ fontFamily: fonts.body, fontWeight: 600, fontSize: 14, color: colors.text, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                      {game.title}
-                    </div>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 3 }}>
-                      <span style={{ background: gc.bg, color: gc.text, fontFamily: fonts.body, fontSize: 10, fontWeight: 700, padding: '2px 7px', borderRadius: 8, textTransform: 'uppercase', letterSpacing: '0.4px' }}>
-                        {game.genreLabel || game.genre}
-                      </span>
-                      {game.year && (
-                        <span style={{ fontFamily: fonts.body, fontSize: 12, color: colors.muted }}>{game.year}</span>
-                      )}
-                    </div>
+          {top10Ids.map((id, idx) => {
+            const game = resolveGame(id, igdbGames);
+            if (!game) return null;
+            const gc = GENRE_COLORS[game.genre] || { bg: '#EEE', text: '#555' };
+            return (
+              <div key={id} onClick={() => navigateTo('game', game)} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 0', borderBottom: `1px solid ${colors.border}`, cursor: 'pointer' }}
+                onMouseEnter={e => e.currentTarget.style.opacity = '0.75'}
+                onMouseLeave={e => e.currentTarget.style.opacity = '1'}
+              >
+                <span style={{ fontFamily: fonts.heading, fontSize: 18, fontWeight: 700, color: colors.muted, width: 24, textAlign: 'right', flexShrink: 0 }}>{idx + 1}</span>
+                <CoverThumb game={game} />
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontFamily: fonts.body, fontWeight: 600, fontSize: 14, color: colors.text }}>{game.title}</div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 2 }}>
+                    <span style={{ background: gc.bg, color: gc.text, fontSize: 10, fontWeight: 700, padding: '1px 6px', borderRadius: 8, textTransform: 'uppercase', letterSpacing: '0.4px', fontFamily: fonts.body }}>{game.genreLabel}</span>
+                    <span style={{ fontFamily: fonts.body, fontSize: 11, color: colors.muted }}>{game.year}</span>
                   </div>
                 </div>
-              );
-            })}
-          </div>
+              </div>
+            );
+          })}
         </div>
       )}
 
       {/* Recent Reviews */}
       {reviews.length > 0 && (
-        <div style={{ ...card, padding: '20px 24px' }}>
+        <div style={{ ...card, padding: '20px 24px', marginBottom: 20 }}>
           <SectionHeader>Recent Reviews</SectionHeader>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
             {reviews.map(review => {
-              const game = String(review.game_id).startsWith('igdb_')
-                ? reviewGameInfo[review.game_id]
-                : getGameById(review.game_id);
+              const game = resolveGame(review.game_id, igdbGames);
+              if (!game) return null;
+              const gc = GENRE_COLORS[game.genre] || { bg: '#EEE', text: '#555' };
               return (
-                <div
-                  key={review.id}
-                  onClick={() => game && navigateTo('game', game)}
-                  style={{ display: 'flex', gap: 12, cursor: game ? 'pointer' : 'default', padding: '8px', borderRadius: 6, borderBottom: `1px solid ${colors.border}` }}
-                  onMouseEnter={e => { if (game) e.currentTarget.style.background = colors.lightBg; }}
-                  onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
+                <div key={review.id} onClick={() => navigateTo('game', game)} style={{ display: 'flex', alignItems: 'flex-start', gap: 12, padding: '12px 14px', background: colors.lightBg, border: `1px solid ${colors.border}`, borderRadius: 8, cursor: 'pointer', transition: 'border-color 0.15s' }}
+                  onMouseEnter={e => e.currentTarget.style.borderColor = colors.navy}
+                  onMouseLeave={e => e.currentTarget.style.borderColor = colors.border}
                 >
-                  {game && (
-                    <div style={{ width: 36, height: 48, borderRadius: 5, flexShrink: 0, background: game.coverColor || colors.navy, overflow: 'hidden', position: 'relative' }}>
-                      {game.coverUrl && (
-                        <img src={game.coverUrl} alt={game.title} style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover' }} />
-                      )}
-                    </div>
-                  )}
+                  <CoverThumb game={game} width={36} height={36} />
                   <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginBottom: 4 }}>
-                      <span style={{ fontFamily: fonts.body, fontWeight: 600, fontSize: 13, color: colors.text, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                        {game?.title || review.game_id}
-                      </span>
-                      <StarDisplay rating={review.rating} size={12} />
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4, flexWrap: 'wrap' }}>
+                      <span style={{ fontFamily: fonts.body, fontWeight: 600, fontSize: 14, color: colors.text }}>{game.title}</span>
+                      <span style={{ background: gc.bg, color: gc.text, fontSize: 10, fontWeight: 700, padding: '1px 6px', borderRadius: 8, textTransform: 'uppercase', letterSpacing: '0.4px', fontFamily: fonts.body }}>{game.genreLabel}</span>
+                      <span style={{ marginLeft: 'auto', fontFamily: fonts.body, fontSize: 11, color: colors.muted }}>{new Date(review.created_at).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' })}</span>
                     </div>
+                    <div style={{ marginBottom: review.body ? 6 : 0 }}><StarDisplay rating={review.rating} size={13} /></div>
                     {review.body && (
-                      <p style={{ fontFamily: fonts.body, fontSize: 13, color: colors.muted, margin: 0, lineHeight: 1.5, display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>
-                        {review.body}
-                      </p>
+                      <p style={{ fontFamily: fonts.body, fontSize: 13, color: colors.text, margin: 0, lineHeight: 1.5, overflow: 'hidden', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical' }}>{review.body}</p>
                     )}
                   </div>
                 </div>
@@ -236,9 +266,78 @@ export default function ProfilePage({ userId, navigateTo }) {
         </div>
       )}
 
-      {top10Ids.length === 0 && reviews.length === 0 && (
+      {/* Genre Favorites */}
+      {genreFavSlots.length > 0 && (
+        <div style={{ ...card, padding: '20px 24px', marginBottom: 20 }}>
+          <SectionHeader>Genre Favorites</SectionHeader>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
+            {genreFavSlots.map(slot => {
+              const favGame = resolveGame(slot.game_id, igdbGames);
+              return (
+                <div key={slot.genre} style={{ background: colors.lightBg, borderRadius: 8, padding: '12px 14px', border: `1px solid ${colors.border}` }}>
+                  <div style={{ fontFamily: fonts.body, fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: 8, color: slot.genre_name ? colors.navy : colors.muted }}>
+                    {slot.genre_name || 'Genre'}
+                  </div>
+                  {favGame ? (
+                    <div
+                      onClick={() => navigateTo('game', favGame)}
+                      style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}
+                    >
+                      <CoverThumb game={favGame} width={24} height={24} radius={4} />
+                      <span style={{ fontFamily: fonts.body, fontSize: 13, fontWeight: 600, color: colors.text }}>{favGame.title}</span>
+                    </div>
+                  ) : (
+                    <span style={{ fontFamily: fonts.body, fontSize: 13, color: colors.muted, fontStyle: 'italic' }}>Not set</span>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* About Me */}
+      {aboutAnswers.length > 0 && (
+        <div style={{ ...card, padding: '20px 24px', marginBottom: 20 }}>
+          <SectionHeader>About Me</SectionHeader>
+          {aboutAnswers.map((qa, idx) => (
+            <div key={idx} style={{ marginBottom: idx < aboutAnswers.length - 1 ? 16 : 0 }}>
+              <div style={{ fontFamily: fonts.body, fontSize: 13, fontWeight: 600, color: colors.navy, marginBottom: 3 }}>{qa.question}</div>
+              <div style={{ fontFamily: fonts.body, fontSize: 14, color: qa.answer ? colors.text : colors.muted, fontStyle: qa.answer ? 'normal' : 'italic' }}>
+                {qa.answer || 'Not answered yet.'}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Wishlist */}
+      {wishlistIds.length > 0 && (
+        <div style={{ ...card, padding: '20px 24px', marginBottom: 20 }}>
+          <SectionHeader>Wishlist</SectionHeader>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10 }}>
+            {wishlistIds.map(id => {
+              const game = resolveGame(id, igdbGames);
+              if (!game) return null;
+              const gc = GENRE_COLORS[game.genre] || { bg: '#EEE', text: '#555' };
+              return (
+                <div key={id} onClick={() => navigateTo('game', game)} style={{ display: 'flex', alignItems: 'center', gap: 8, background: colors.lightBg, border: `1px solid ${colors.border}`, borderRadius: 8, padding: '8px 12px', cursor: 'pointer' }}
+                  onMouseEnter={e => e.currentTarget.style.borderColor = colors.navy}
+                  onMouseLeave={e => e.currentTarget.style.borderColor = colors.border}
+                >
+                  <CoverThumb game={game} width={22} height={22} radius={4} />
+                  <span style={{ fontFamily: fonts.body, fontSize: 13, fontWeight: 600, color: colors.text }}>{game.title}</span>
+                  <span style={{ background: gc.bg, color: gc.text, fontSize: 10, fontWeight: 700, padding: '1px 6px', borderRadius: 8, textTransform: 'uppercase', letterSpacing: '0.4px', fontFamily: fonts.body }}>{game.genreLabel}</span>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {top10Ids.length === 0 && reviews.length === 0 && genreFavSlots.length === 0 && aboutAnswers.length === 0 && wishlistIds.length === 0 && (
         <div style={{ ...card, padding: 32, textAlign: 'center', color: colors.muted, fontFamily: fonts.body, fontSize: 14 }}>
-          This player hasn't added any games or reviews yet.
+          This player hasn't filled out their profile yet.
         </div>
       )}
     </div>

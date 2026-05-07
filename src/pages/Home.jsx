@@ -1,7 +1,9 @@
 import { useState, useEffect } from 'react';
-import { colors, fonts, input } from '../styles/theme';
+import { colors, fonts, input, card, button } from '../styles/theme';
 import GameCard from '../components/GameCard';
 import { searchGames, fetchGenreGames, fetchThemeGames, fetchYearGames } from '../lib/igdb';
+import { useAuth } from '../contexts/AuthContext';
+import { supabase } from '../lib/supabase';
 
 const GENRE_ROWS = [
   { key: 'rpg',      label: 'RPG',      accent: colors.navy,   type: 'genre', id: 12 },
@@ -30,6 +32,9 @@ function SkeletonRow() {
 }
 
 export default function Home({ navigateTo, currentUser }) {
+  const { profile, user } = useAuth();
+  const isCurator = profile?.is_curator === true;
+
   const [search, setSearch] = useState('');
   const [igdbResults, setIgdbResults] = useState([]);
   const [igdbLoading, setIgdbLoading] = useState(false);
@@ -44,8 +49,27 @@ export default function Home({ navigateTo, currentUser }) {
   const [yearGames, setYearGames] = useState([]);
   const [yearLoading, setYearLoading] = useState(false);
 
+  const [blockedIds, setBlockedIds] = useState(new Set());
+  const [blockedList, setBlockedList] = useState([]);
+
   const isSearching = search.trim().length > 0;
   const userTop10 = [];
+
+  // Fetch blocklist on mount — used to filter results for all users.
+  useEffect(() => {
+    supabase.from('blocked_games').select('game_id')
+      .then(({ data }) => {
+        if (data) setBlockedIds(new Set(data.map(r => r.game_id)));
+      });
+  }, []);
+
+  // Fetch full blocklist rows for curator review panel.
+  useEffect(() => {
+    if (!isCurator) return;
+    supabase.from('blocked_games').select('game_id, title, blocked_at')
+      .order('blocked_at', { ascending: false })
+      .then(({ data }) => { if (data) setBlockedList(data); });
+  }, [isCurator]);
 
   // Fetch all genre rows on mount — each resolves independently.
   useEffect(() => {
@@ -71,19 +95,59 @@ export default function Home({ navigateTo, currentUser }) {
       .finally(() => setYearLoading(false));
   }, [selectedYear]);
 
-  // Debounced IGDB search.
+  // Debounced IGDB search — filters blocked games from results.
   useEffect(() => {
     const q = search.trim();
     if (!q) { setIgdbResults([]); setIgdbLoading(false); return; }
     setIgdbLoading(true);
     const t = setTimeout(() => {
       searchGames(q)
-        .then(results => setIgdbResults(results))
+        .then(results => setIgdbResults(results.filter(g => !blockedIds.has(g.id))))
         .catch(() => setIgdbResults([]))
         .finally(() => setIgdbLoading(false));
     }, 350);
     return () => clearTimeout(t);
-  }, [search]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [search, blockedIds]);
+
+  async function blockGame(game) {
+    setIgdbResults(prev => prev.filter(g => g.id !== game.id));
+    setBlockedIds(prev => new Set([...prev, game.id]));
+    setBlockedList(prev => [{ game_id: game.id, title: game.title, blocked_at: new Date().toISOString() }, ...prev]);
+    await supabase.from('blocked_games').insert({ game_id: game.id, title: game.title, blocked_by: user?.id });
+  }
+
+  async function restoreGame(gameId) {
+    setBlockedList(prev => prev.filter(e => e.game_id !== gameId));
+    setBlockedIds(prev => { const next = new Set(prev); next.delete(gameId); return next; });
+    await supabase.from('blocked_games').delete().eq('game_id', gameId);
+  }
+
+  function GameCardWithBlock({ game }) {
+    return (
+      <div style={{ position: 'relative' }}>
+        <GameCard
+          game={game}
+          onClick={() => navigateTo('game', game)}
+          isTop10={userTop10.includes(game.id)}
+        />
+        {isCurator && game.id.startsWith('igdb_') && (
+          <button
+            onClick={e => { e.stopPropagation(); blockGame(game); }}
+            title="Block this game"
+            style={{
+              position: 'absolute', top: 6, right: 6,
+              background: 'rgba(0,0,0,0.65)', border: 'none', borderRadius: 4,
+              color: '#fff', cursor: 'pointer', padding: '3px 7px', fontSize: 13,
+              lineHeight: 1, zIndex: 10,
+            }}
+          >
+            ✕
+          </button>
+        )}
+      </div>
+    );
+  }
 
   return (
     <div style={{ maxWidth: 1100, margin: '0 auto', padding: '32px 24px' }}>
@@ -155,6 +219,11 @@ export default function Home({ navigateTo, currentUser }) {
                 IGDB
               </span>
             )}
+            {isCurator && !igdbLoading && igdbResults.length > 0 && (
+              <span style={{ fontFamily: fonts.body, fontSize: 11, color: colors.muted, fontStyle: 'italic' }}>
+                — click ✕ to block a game
+              </span>
+            )}
           </div>
           {igdbLoading ? (
             <SkeletonRow />
@@ -165,12 +234,7 @@ export default function Home({ navigateTo, currentUser }) {
           ) : (
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 16 }}>
               {igdbResults.map(game => (
-                <GameCard
-                  key={game.id}
-                  game={game}
-                  onClick={() => navigateTo('game', game)}
-                  isTop10={userTop10.includes(game.id)}
-                />
+                <GameCardWithBlock key={game.id} game={game} />
               ))}
             </div>
           )}
@@ -183,7 +247,7 @@ export default function Home({ navigateTo, currentUser }) {
 
           {/* Genre rows */}
           {GENRE_ROWS.map(row => {
-            const games = genreGames[row.key] || [];
+            const games = (genreGames[row.key] || []).filter(g => !blockedIds.has(g.id));
             const loading = genreLoading[row.key];
             const expanded = expandedRows[row.key];
 
@@ -221,12 +285,7 @@ export default function Home({ navigateTo, currentUser }) {
                 ) : expanded ? (
                   <div style={{ display: 'flex', flexWrap: 'wrap', gap: 16 }}>
                     {games.map(game => (
-                      <GameCard
-                        key={game.id}
-                        game={game}
-                        onClick={() => navigateTo('game', game)}
-                        isTop10={userTop10.includes(game.id)}
-                      />
+                      <GameCardWithBlock key={game.id} game={game} />
                     ))}
                   </div>
                 ) : (
@@ -235,12 +294,7 @@ export default function Home({ navigateTo, currentUser }) {
                     scrollbarWidth: 'thin', scrollbarColor: `${colors.border} transparent`,
                   }}>
                     {games.map(game => (
-                      <GameCard
-                        key={game.id}
-                        game={game}
-                        onClick={() => navigateTo('game', game)}
-                        isTop10={userTop10.includes(game.id)}
-                      />
+                      <GameCardWithBlock key={game.id} game={game} />
                     ))}
                   </div>
                 )}
@@ -273,7 +327,7 @@ export default function Home({ navigateTo, currentUser }) {
               </select>
               {selectedYear && !yearLoading && yearGames.length > 0 && (
                 <span style={{ fontFamily: fonts.body, fontSize: 13, color: colors.muted }}>
-                  {yearGames.length} games
+                  {yearGames.filter(g => !blockedIds.has(g.id)).length} games
                 </span>
               )}
             </div>
@@ -285,13 +339,8 @@ export default function Home({ navigateTo, currentUser }) {
                 display: 'flex', gap: 16, overflowX: 'auto', paddingBottom: 12,
                 scrollbarWidth: 'thin', scrollbarColor: `${colors.border} transparent`,
               }}>
-                {yearGames.map(game => (
-                  <GameCard
-                    key={game.id}
-                    game={game}
-                    onClick={() => navigateTo('game', game)}
-                    isTop10={userTop10.includes(game.id)}
-                  />
+                {yearGames.filter(g => !blockedIds.has(g.id)).map(game => (
+                  <GameCardWithBlock key={game.id} game={game} />
                 ))}
               </div>
             ) : selectedYear ? (
@@ -301,6 +350,42 @@ export default function Home({ navigateTo, currentUser }) {
             ) : null}
           </div>
 
+        </div>
+      )}
+
+      {/* ── Curator: Blocked Games panel ── */}
+      {isCurator && (
+        <div style={{ ...card, padding: '20px 24px', marginTop: 48 }}>
+          <h2 style={{
+            fontFamily: fonts.pixel, fontSize: 10, color: colors.text,
+            margin: '0 0 16px', paddingBottom: 10, borderBottom: `2px solid ${colors.border}`,
+          }}>
+            Blocked Games ({blockedList.length})
+          </h2>
+          {blockedList.length === 0 ? (
+            <p style={{ fontFamily: fonts.body, fontSize: 14, color: colors.muted, margin: 0 }}>
+              No games blocked yet. Search for a game and click ✕ to block it.
+            </p>
+          ) : (
+            blockedList.map(entry => (
+              <div key={entry.game_id} style={{
+                display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                padding: '10px 0', borderBottom: `1px solid ${colors.border}`,
+              }}>
+                <div>
+                  <span style={{ fontFamily: fonts.body, fontSize: 14, color: colors.text, fontWeight: 500 }}>
+                    {entry.title}
+                  </span>
+                  <span style={{ fontFamily: fonts.body, fontSize: 11, color: colors.muted, marginLeft: 10 }}>
+                    {new Date(entry.blocked_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
+                  </span>
+                </div>
+                <button onClick={() => restoreGame(entry.game_id)} style={{ ...button.ghost, fontSize: 12, padding: '3px 10px' }}>
+                  Restore
+                </button>
+              </div>
+            ))
+          )}
         </div>
       )}
     </div>

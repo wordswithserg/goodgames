@@ -1949,19 +1949,25 @@ export default function SquadPage({ navigateTo }) {
                   <div
                     key={m.user_id}
                     title={m.username === currentUser ? `${m.username} (you)` : m.username}
-                    style={{ marginLeft: i === 0 ? 0 : -8, zIndex: currentSquad.members.length - i }}
+                    style={{ marginLeft: i === 0 ? 0 : -8, zIndex: currentSquad.members.length - i, cursor: 'pointer' }}
+                    onClick={() => m.username === currentUser ? navigateTo('player') : navigateTo('profile', { id: m.user_id, username: m.username })}
                   >
                     <MemberAvatar name={m.username} size={36} isYou={m.username === currentUser} />
                   </div>
                 ))}
                 <div style={{ marginLeft: 14 }}>
                   {currentSquad.members.map((m, i) => (
-                    <span key={m.user_id} style={{
-                      fontFamily: fonts.body,
-                      fontSize: 13,
-                      color: m.username === currentUser ? colors.orange : colors.text,
-                      fontWeight: m.username === currentUser ? 700 : 400,
-                    }}>
+                    <span key={m.user_id}
+                      onClick={() => m.username === currentUser ? navigateTo('player') : navigateTo('profile', { id: m.user_id, username: m.username })}
+                      style={{
+                        fontFamily: fonts.body,
+                        fontSize: 13,
+                        color: m.username === currentUser ? colors.orange : colors.text,
+                        fontWeight: m.username === currentUser ? 700 : 400,
+                        cursor: 'pointer',
+                        textDecoration: 'underline',
+                        textDecorationColor: m.username === currentUser ? colors.orange : colors.border,
+                      }}>
                       {m.username === currentUser ? `${m.username} (you)` : m.username}
                       {i < currentSquad.members.length - 1 ? ', ' : ''}
                     </span>
@@ -2016,8 +2022,13 @@ export default function SquadPage({ navigateTo }) {
                       </div>
                       {currentSquad.members.map(m => (
                         <div key={m.user_id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 0', borderBottom: `1px solid ${colors.border}` }}>
-                          <MemberAvatar name={m.username} size={28} isYou={m.user_id === user?.id} />
-                          <span style={{ fontFamily: fonts.body, fontSize: 14, color: colors.text, flex: 1 }}>{m.username}{m.user_id === user?.id ? ' (you)' : ''}</span>
+                          <div style={{ cursor: 'pointer' }} onClick={() => m.user_id === user?.id ? navigateTo('player') : navigateTo('profile', { id: m.user_id, username: m.username })}>
+                            <MemberAvatar name={m.username} size={28} isYou={m.user_id === user?.id} />
+                          </div>
+                          <span
+                            onClick={() => m.user_id === user?.id ? navigateTo('player') : navigateTo('profile', { id: m.user_id, username: m.username })}
+                            style={{ fontFamily: fonts.body, fontSize: 14, color: colors.text, flex: 1, cursor: 'pointer', textDecoration: 'underline', textDecorationColor: colors.border }}
+                          >{m.username}{m.user_id === user?.id ? ' (you)' : ''}</span>
                           <span style={{
                             fontFamily: fonts.body, fontSize: 11, fontWeight: 700,
                             padding: '2px 8px', borderRadius: 10,
