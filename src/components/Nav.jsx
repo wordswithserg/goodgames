@@ -7,8 +7,8 @@ import NavAuth from './auth/NavAuth';
 
 const NAV_LINKS = [
   { label: 'Home', page: 'home' },
-  { label: 'Player', page: 'player' },
-  { label: 'Squad', page: 'squad' },
+  { label: 'My Profile', page: 'player' },
+  { label: 'My Squads', page: 'squad' },
 ];
 
 const FEEDBACK_URL = 'https://forms.fillout.com/t/guNnh1oh8Zus';
