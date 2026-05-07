@@ -150,7 +150,7 @@ export default function Home({ navigateTo, currentUser }) {
   }
 
   return (
-    <div style={{ maxWidth: 1100, margin: '0 auto', padding: '32px 24px' }}>
+    <div className="home-container" style={{ maxWidth: 1100, margin: '0 auto', padding: '32px 24px' }}>
 
       {/* Hero */}
       {!isSearching && (

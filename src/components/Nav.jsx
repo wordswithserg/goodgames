@@ -11,6 +11,8 @@ const NAV_LINKS = [
   { label: 'Squad', page: 'squad' },
 ];
 
+const FEEDBACK_URL = 'https://forms.fillout.com/t/guNnh1oh8Zus';
+
 function NavSearchBar({ navigateTo }) {
   const [query, setQuery] = useState('');
   const [gameResults, setGameResults] = useState([]);
@@ -178,80 +180,199 @@ function NavSearchBar({ navigateTo }) {
 }
 
 export default function Nav({ currentPage, navigateTo }) {
+  const [menuOpen, setMenuOpen] = useState(false);
+
+  function handleNav(page) {
+    setMenuOpen(false);
+    navigateTo(page);
+  }
+
   return (
-    <nav style={{
-      background: colors.navy,
-      color: colors.bg,
-      display: 'flex',
-      alignItems: 'center',
-      padding: '0 28px',
-      height: 56,
-      position: 'sticky',
-      top: 0,
-      zIndex: 100,
-      boxShadow: '0 2px 8px rgba(0,0,0,0.18)',
-      gap: 24,
-    }}>
-      {/* Logo */}
-      <button
-        onClick={() => navigateTo('home')}
+    <>
+      <nav
+        className="nav-root"
         style={{
-          background: 'none',
-          border: 'none',
-          cursor: 'pointer',
-          padding: 0,
+          background: colors.navy,
+          color: colors.bg,
           display: 'flex',
           alignItems: 'center',
-          gap: 8,
-          marginRight: 8,
+          padding: '0 28px',
+          height: 56,
+          position: 'sticky',
+          top: 0,
+          zIndex: 100,
+          boxShadow: '0 2px 8px rgba(0,0,0,0.18)',
+          gap: 24,
         }}
       >
-        <div style={{ height: 38, width: 200, overflow: 'hidden', position: 'relative', flexShrink: 0 }}>
-          <img
-            src="/goodgames-05.png"
-            alt="GoodGames"
-            style={{
-              position: 'absolute',
-              height: 220,
-              width: 'auto',
-              top: '50%',
-              left: '50%',
-              transform: 'translate(-50%, -50%)',
-              filter: 'brightness(0) invert(1)',
-              maxWidth: 'none',
-            }}
-          />
-        </div>
-      </button>
+        {/* Logo */}
+        <button
+          onClick={() => { setMenuOpen(false); navigateTo('home'); }}
+          style={{
+            background: 'none',
+            border: 'none',
+            cursor: 'pointer',
+            padding: 0,
+            display: 'flex',
+            alignItems: 'center',
+            gap: 8,
+            marginRight: 8,
+          }}
+        >
+          <div
+            className="nav-logo"
+            style={{ height: 38, width: 200, overflow: 'hidden', position: 'relative', flexShrink: 0 }}
+          >
+            <img
+              src="/goodgames-05.png"
+              alt="GoodGames"
+              style={{
+                position: 'absolute',
+                height: 220,
+                width: 'auto',
+                top: '50%',
+                left: '50%',
+                transform: 'translate(-50%, -50%)',
+                filter: 'brightness(0) invert(1)',
+                maxWidth: 'none',
+              }}
+            />
+          </div>
+        </button>
 
-      {/* Page links */}
-      <div style={{ display: 'flex', gap: 4 }}>
-        {NAV_LINKS.map(link => (
+        {/* Desktop: Page links */}
+        <div className="nav-desktop-only" style={{ gap: 4 }}>
+          {NAV_LINKS.map(link => (
+            <button
+              key={link.page}
+              onClick={() => navigateTo(link.page)}
+              style={{
+                background: currentPage === link.page ? 'rgba(245,200,66,0.18)' : 'none',
+                border: 'none',
+                color: currentPage === link.page ? colors.yellow : colors.bg,
+                fontFamily: fonts.pixel,
+                fontSize: 9,
+                cursor: 'pointer',
+                padding: '6px 14px',
+                borderRadius: 6,
+                transition: 'background 0.15s',
+              }}
+            >
+              {link.label}
+            </button>
+          ))}
+        </div>
+
+        {/* Desktop: Search */}
+        <div className="nav-desktop-only" style={{ flex: 1 }}>
+          <NavSearchBar navigateTo={navigateTo} />
+        </div>
+
+        {/* Desktop: Feedback */}
+        <a
+          className="nav-desktop-only"
+          href={FEEDBACK_URL}
+          target="_blank"
+          rel="noopener noreferrer"
+          style={{
+            background: 'rgba(245,200,66,0.15)',
+            border: '1px solid rgba(245,200,66,0.4)',
+            color: colors.yellow,
+            fontFamily: fonts.pixel,
+            fontSize: 9,
+            cursor: 'pointer',
+            padding: '6px 14px',
+            borderRadius: 6,
+            textDecoration: 'none',
+            whiteSpace: 'nowrap',
+            flexShrink: 0,
+          }}
+        >
+          Feedback
+        </a>
+
+        {/* Auth + Hamburger (right side, always visible) */}
+        <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
+          <NavAuth onNavigateToProfile={() => handleNav('player')} onNavigateToSettings={() => handleNav('settings')} />
+
+          {/* Mobile: Hamburger */}
           <button
-            key={link.page}
-            onClick={() => navigateTo(link.page)}
+            className="nav-mobile-only"
+            onClick={() => setMenuOpen(m => !m)}
+            aria-label={menuOpen ? 'Close menu' : 'Open menu'}
             style={{
-              background: currentPage === link.page ? 'rgba(245,200,66,0.18)' : 'none',
+              background: 'none',
               border: 'none',
-              color: currentPage === link.page ? colors.yellow : colors.bg,
-              fontFamily: fonts.pixel,
-              fontSize: 9,
+              color: colors.white,
               cursor: 'pointer',
-              padding: '6px 14px',
-              borderRadius: 6,
-              transition: 'background 0.15s',
+              fontSize: 22,
+              padding: '4px 6px',
+              lineHeight: 1,
             }}
           >
-            {link.label}
+            {menuOpen ? '✕' : '☰'}
           </button>
-        ))}
-      </div>
+        </div>
+      </nav>
 
-      {/* Search */}
-      <NavSearchBar navigateTo={navigateTo} />
-
-      {/* Auth controls */}
-      <NavAuth onNavigateToProfile={() => navigateTo('player')} onNavigateToSettings={() => navigateTo('settings')} />
-    </nav>
+      {/* Mobile slide-down menu */}
+      {menuOpen && (
+        <div style={{
+          position: 'fixed',
+          top: 56,
+          left: 0,
+          right: 0,
+          background: colors.navy,
+          zIndex: 99,
+          padding: '16px 20px',
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 8,
+          boxShadow: '0 4px 16px rgba(0,0,0,0.3)',
+        }}>
+          <NavSearchBar navigateTo={(page, data) => { setMenuOpen(false); navigateTo(page, data); }} />
+          <div style={{ height: 1, background: 'rgba(255,255,255,0.12)', margin: '4px 0' }} />
+          {NAV_LINKS.map(link => (
+            <button
+              key={link.page}
+              onClick={() => handleNav(link.page)}
+              style={{
+                background: currentPage === link.page ? 'rgba(245,200,66,0.18)' : 'none',
+                border: 'none',
+                color: currentPage === link.page ? colors.yellow : colors.bg,
+                fontFamily: fonts.pixel,
+                fontSize: 9,
+                cursor: 'pointer',
+                padding: '12px 14px',
+                borderRadius: 6,
+                textAlign: 'left',
+                width: '100%',
+              }}
+            >
+              {link.label}
+            </button>
+          ))}
+          <a
+            href={FEEDBACK_URL}
+            target="_blank"
+            rel="noopener noreferrer"
+            onClick={() => setMenuOpen(false)}
+            style={{
+              background: 'rgba(245,200,66,0.15)',
+              border: '1px solid rgba(245,200,66,0.4)',
+              color: colors.yellow,
+              fontFamily: fonts.pixel,
+              fontSize: 9,
+              padding: '12px 14px',
+              borderRadius: 6,
+              textDecoration: 'none',
+              display: 'block',
+            }}
+          >
+            Feedback
+          </a>
+        </div>
+      )}
+    </>
   );
 }
