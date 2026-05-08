@@ -122,7 +122,7 @@ function LoginPrompt({ navigateTo, action }) {
 }
 
 // voteData: { up, down, mine }  onVote(reviewId, dir): handled by parent
-function ReviewCard({ review, voteData = { up: 0, down: 0, mine: null }, onVote, isAuthor, onEdit }) {
+function ReviewCard({ review, voteData = { up: 0, down: 0, mine: null }, onVote, isAuthor, onEdit, onDelete }) {
   const [isEditing, setIsEditing] = useState(false);
   const [editRating, setEditRating] = useState(review.rating);
   const [editBody, setEditBody] = useState(review.body || '');
@@ -184,12 +184,20 @@ function ReviewCard({ review, voteData = { up: 0, down: 0, mine: null }, onVote,
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           {isAuthor && !isEditing && (
-            <button
-              onClick={startEdit}
-              style={{ ...button.ghost, padding: '3px 10px', fontSize: 12 }}
-            >
-              Edit
-            </button>
+            <>
+              <button
+                onClick={startEdit}
+                style={{ ...button.ghost, padding: '3px 10px', fontSize: 12 }}
+              >
+                Edit
+              </button>
+              <button
+                onClick={() => { if (window.confirm('Delete your review?')) onDelete(review.id); }}
+                style={{ ...button.danger, padding: '3px 10px', fontSize: 12 }}
+              >
+                Delete
+              </button>
+            </>
           )}
           {!isEditing && <StarDisplay rating={review.rating} size={15} />}
         </div>
@@ -428,7 +436,9 @@ export default function GamePage({ game, navigateTo }) {
   const avg = avgRating(reviewList);
   const gc = GENRE_COLORS[g.genre] || { bg: '#EEE', text: '#555' };
 
-  const sortedReviews = [...reviewList].sort((a, b) => {
+  const myReview = isLoggedIn && currentUser ? reviewList.find(r => r.author === currentUser) ?? null : null;
+
+  const sortedReviews = [...reviewList].filter(r => !myReview || r.id !== myReview.id).sort((a, b) => {
     if (sort === 'highest') return b.rating - a.rating;
     if (sort === 'lowest') return a.rating - b.rating;
     return 0;
@@ -470,6 +480,11 @@ export default function GamePage({ game, navigateTo }) {
     setBody('');
     setSubmitted(true);
     setTimeout(() => setSubmitted(false), 3000);
+  }
+
+  async function handleDelete(reviewId) {
+    setReviewList(prev => prev.filter(r => r.id !== reviewId));
+    await supabase.from('reviews').delete().eq('id', reviewId).eq('user_id', user.id);
   }
 
   async function handleEdit(reviewId, newRating, newBody) {
@@ -709,53 +724,63 @@ export default function GamePage({ game, navigateTo }) {
         </div>
       )}
 
-      {/* Review form */}
-      <div style={{ ...card, padding: '20px 24px', marginBottom: 24 }}>
-        <h2 style={{
-          fontFamily: fonts.pixel,
-          fontSize: 10,
-          color: colors.text,
-          margin: '0 0 16px',
-        }}>
-          Write a Review
-        </h2>
-
-        {!isLoggedIn ? (
-          <LoginPrompt navigateTo={navigateTo} action="write a review" />
-        ) : (
-          <div>
-            <div style={{ marginBottom: 14 }}>
-              <label style={{ fontFamily: fonts.body, fontSize: 13, fontWeight: 600, color: colors.text, display: 'block', marginBottom: 6 }}>
-                Your Rating
-                {ratingError && (
-                  <span style={{ color: '#C0392B', fontWeight: 400 }}> — please select a rating</span>
+      {/* Review form / My Review */}
+      {isLoggedIn && myReview ? (
+        <div style={{ marginBottom: 24 }}>
+          <h2 style={{ fontFamily: fonts.pixel, fontSize: 10, color: colors.text, margin: '0 0 12px' }}>
+            My Review
+          </h2>
+          <ReviewCard
+            review={myReview}
+            voteData={votes[myReview.id] || { up: 0, down: 0, mine: null }}
+            onVote={handleVote}
+            isAuthor={true}
+            onEdit={handleEdit}
+            onDelete={handleDelete}
+          />
+        </div>
+      ) : (
+        <div style={{ ...card, padding: '20px 24px', marginBottom: 24 }}>
+          <h2 style={{ fontFamily: fonts.pixel, fontSize: 10, color: colors.text, margin: '0 0 16px' }}>
+            Write a Review
+          </h2>
+          {!isLoggedIn ? (
+            <LoginPrompt navigateTo={navigateTo} action="write a review" />
+          ) : (
+            <div>
+              <div style={{ marginBottom: 14 }}>
+                <label style={{ fontFamily: fonts.body, fontSize: 13, fontWeight: 600, color: colors.text, display: 'block', marginBottom: 6 }}>
+                  Your Rating
+                  {ratingError && (
+                    <span style={{ color: '#C0392B', fontWeight: 400 }}> — please select a rating</span>
+                  )}
+                </label>
+                <StarPicker value={rating} onChange={v => { setRating(v); setRatingError(false); }} />
+              </div>
+              <div style={{ marginBottom: 14 }}>
+                <label style={{ fontFamily: fonts.body, fontSize: 13, fontWeight: 600, color: colors.text, display: 'block', marginBottom: 6 }}>
+                  Review <span style={{ fontWeight: 400, color: colors.muted }}>(optional)</span>
+                </label>
+                <textarea
+                  value={body}
+                  onChange={e => setBody(e.target.value)}
+                  placeholder="Share your thoughts…"
+                  rows={4}
+                  style={{ ...input.base, resize: 'vertical', fontFamily: fonts.body, lineHeight: 1.5 }}
+                />
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                <button onClick={submitReview} style={button.primary}>Submit Review</button>
+                {submitted && (
+                  <span style={{ fontFamily: fonts.body, fontSize: 13, color: '#2D7A4F' }}>
+                    ✓ Review posted!
+                  </span>
                 )}
-              </label>
-              <StarPicker value={rating} onChange={v => { setRating(v); setRatingError(false); }} />
+              </div>
             </div>
-            <div style={{ marginBottom: 14 }}>
-              <label style={{ fontFamily: fonts.body, fontSize: 13, fontWeight: 600, color: colors.text, display: 'block', marginBottom: 6 }}>
-                Review <span style={{ fontWeight: 400, color: colors.muted }}>(optional)</span>
-              </label>
-              <textarea
-                value={body}
-                onChange={e => setBody(e.target.value)}
-                placeholder="Share your thoughts…"
-                rows={4}
-                style={{ ...input.base, resize: 'vertical', fontFamily: fonts.body, lineHeight: 1.5 }}
-              />
-            </div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-              <button onClick={submitReview} style={button.primary}>Submit Review</button>
-              {submitted && (
-                <span style={{ fontFamily: fonts.body, fontSize: 13, color: '#2D7A4F' }}>
-                  ✓ Review posted!
-                </span>
-              )}
-            </div>
-          </div>
-        )}
-      </div>
+          )}
+        </div>
+      )}
 
       {/* Reviews feed */}
       <div>
@@ -819,6 +844,7 @@ export default function GamePage({ game, navigateTo }) {
               onVote={isLoggedIn ? handleVote : undefined}
               isAuthor={review.author === currentUser}
               onEdit={isLoggedIn ? handleEdit : undefined}
+              onDelete={isLoggedIn ? handleDelete : undefined}
             />
           ))
         )}

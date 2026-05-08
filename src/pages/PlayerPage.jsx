@@ -62,6 +62,55 @@ function SectionHeader({ children }) {
   );
 }
 
+function GenreBreakdownBar({ segments }) {
+  const [hovered, setHovered] = useState(null);
+  return (
+    <div style={{ position: 'relative', marginBottom: 16 }}>
+      <div style={{ display: 'flex', height: 10, borderRadius: 6, overflow: 'hidden', gap: 2 }}>
+        {segments.map((seg, i) => (
+          <div
+            key={seg.genre}
+            onMouseEnter={e => {
+              const rect = e.currentTarget.parentElement.getBoundingClientRect();
+              const segRect = e.currentTarget.getBoundingClientRect();
+              const x = ((segRect.left - rect.left) + segRect.width / 2) / rect.width * 100;
+              setHovered({ ...seg, x });
+            }}
+            onMouseLeave={() => setHovered(null)}
+            style={{
+              flex: seg.count,
+              background: seg.color,
+              borderRadius: i === 0 ? '6px 0 0 6px' : i === segments.length - 1 ? '0 6px 6px 0' : 0,
+              cursor: 'default',
+              opacity: hovered && hovered.genre !== seg.genre ? 0.55 : 1,
+              transition: 'opacity 0.15s',
+            }}
+          />
+        ))}
+      </div>
+      {hovered && (
+        <div style={{
+          position: 'absolute',
+          bottom: 16,
+          left: `${hovered.x}%`,
+          transform: 'translateX(-50%)',
+          background: colors.navy,
+          color: colors.white,
+          fontFamily: fonts.body,
+          fontSize: 12,
+          padding: '5px 10px',
+          borderRadius: 6,
+          whiteSpace: 'nowrap',
+          pointerEvents: 'none',
+          zIndex: 10,
+        }}>
+          {hovered.genreLabel} · {hovered.count} {hovered.count === 1 ? 'review' : 'reviews'} · {hovered.pct}%
+        </div>
+      )}
+    </div>
+  );
+}
+
 function IgdbGameSearch({ onSelect, exclude = [], placeholder = 'Search games…' }) {
   const [q, setQ] = useState('');
   const [results, setResults] = useState([]);
@@ -975,6 +1024,26 @@ export default function PlayerPage({ navigateTo }) {
       {/* My Reviews */}
       <div style={{ ...card, padding: '20px 24px', marginBottom: 20 }}>
         <SectionHeader>My Reviews</SectionHeader>
+        {(() => {
+          const counts = {};
+          myReviews.forEach(review => {
+            const isIgdb = String(review.game_id).startsWith('igdb_');
+            const game = isIgdb ? reviewGameInfo[review.game_id] : getGameById(review.game_id);
+            if (!game?.genre) return;
+            if (!counts[game.genre]) counts[game.genre] = { genre: game.genre, genreLabel: game.genreLabel || game.genre, count: 0 };
+            counts[game.genre].count++;
+          });
+          const total = Object.values(counts).reduce((s, g) => s + g.count, 0);
+          if (total === 0) return null;
+          const segments = Object.values(counts)
+            .sort((a, b) => b.count - a.count)
+            .map(g => ({
+              ...g,
+              pct: Math.round((g.count / total) * 100),
+              color: (GENRE_COLORS[g.genre] || {}).text || '#888',
+            }));
+          return <GenreBreakdownBar segments={segments} />;
+        })()}
         {myReviews.length === 0 ? (
           <p style={{ fontFamily: fonts.body, fontSize: 14, color: colors.muted }}>
             No reviews yet. Head to a game page to write one.

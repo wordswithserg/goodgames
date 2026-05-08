@@ -130,6 +130,22 @@
 // CREATE POLICY "Users manage own prefs" ON squad_notification_prefs FOR ALL USING (auth.uid() = user_id);
 // CREATE POLICY "Users read own notifications" ON notifications FOR SELECT USING (auth.uid() = user_id);
 // CREATE POLICY "Authenticated users insert notifications" ON notifications FOR INSERT TO authenticated WITH CHECK (true);
+//
+// -- Thread body
+// alter table threads add column if not exists body text;
+//
+// -- Reply votes
+// create table if not exists reply_votes (
+//   user_id uuid references auth.users(id) on delete cascade,
+//   reply_id uuid references replies(id) on delete cascade,
+//   vote text not null check (vote in ('up', 'down')),
+//   primary key (user_id, reply_id)
+// );
+// alter table reply_votes enable row level security;
+// create policy "users read reply votes" on reply_votes for select using (true);
+// create policy "users manage own reply votes" on reply_votes
+//   for all using (auth.uid() = user_id) with check (auth.uid() = user_id);
+// grant select, insert, update, delete on reply_votes to authenticated;
 
 import { useState, useEffect } from 'react';
 import { colors, fonts, card, button, input } from '../styles/theme';
@@ -235,7 +251,7 @@ function Countdown({ target }) {
 
 // poll: { id, question, options, myVote (number|null), tallies, archived }
 // castVote(optionIndex), isAdmin, onArchive(id, archived), accentColor
-function PollSection({ poll, castVote, isAdmin, onArchive, accentColor }) {
+function PollSection({ poll, castVote, isAdmin, onArchive, onDelete, accentColor }) {
   const hasVoted = poll.myVote !== null && poll.myVote !== undefined;
   const tallies = poll.tallies;
   const total = tallies.reduce((a, b) => a + b, 0);
@@ -248,12 +264,22 @@ function PollSection({ poll, castVote, isAdmin, onArchive, accentColor }) {
           {poll.question}
         </div>
         {isAdmin && (
-          <button
-            onClick={() => onArchive(poll.id, !poll.archived)}
-            style={{ ...button.ghost, fontSize: 11, padding: '3px 8px', whiteSpace: 'nowrap', flexShrink: 0, color: colors.muted, borderColor: colors.border }}
-          >
-            {poll.archived ? 'Unarchive' : 'Archive'}
-          </button>
+          <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
+            <button
+              onClick={() => onArchive(poll.id, !poll.archived)}
+              style={{ ...button.ghost, fontSize: 11, padding: '3px 8px', whiteSpace: 'nowrap', color: colors.muted, borderColor: colors.border }}
+            >
+              {poll.archived ? 'Unarchive' : 'Archive'}
+            </button>
+            {poll.archived && (
+              <button
+                onClick={() => { if (window.confirm('Permanently delete this poll?')) onDelete(poll.id); }}
+                style={{ ...button.danger, fontSize: 11, padding: '3px 8px', whiteSpace: 'nowrap' }}
+              >
+                Delete
+              </button>
+            )}
+          </div>
         )}
       </div>
       {poll.options.map((opt, i) => {
@@ -405,16 +431,19 @@ function CreatePollForm({ onCreate }) {
 }
 
 // threads: [{ id, title, author, date, replies, archived }]
-// onCreateThread(title), onAddReply(threadId, body), isAdmin, onArchive(id, archived)
-function ThreadSection({ threads, onCreateThread, onAddReply, currentUser, isAdmin, onArchive }) {
+// onCreateThread(title, body), onAddReply(threadId, body), isAdmin, onArchive(id, archived), onDelete(id)
+function ThreadSection({ threads, onCreateThread, onAddReply, currentUser, isAdmin, onArchive, onDelete, replyVotes = {}, onVoteReply, threadVotes = {}, onVoteThread }) {
   const [newTitle, setNewTitle] = useState('');
+  const [newBody, setNewBody] = useState('');
   const [replyText, setReplyText] = useState({});
   const [openThreads, setOpenThreads] = useState(() => new Set());
+  const [showArchive, setShowArchive] = useState(false);
 
   function createThread() {
-    if (!newTitle.trim()) return;
-    onCreateThread(newTitle.trim());
+    if (!newTitle.trim() || !newBody.trim()) return;
+    onCreateThread(newTitle.trim(), newBody.trim());
     setNewTitle('');
+    setNewBody('');
   }
 
   function addReply(threadId) {
@@ -426,18 +455,30 @@ function ThreadSection({ threads, onCreateThread, onAddReply, currentUser, isAdm
 
   return (
     <div>
-      <div style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
+      <div style={{ ...card, padding: '14px 16px', marginBottom: 16, background: colors.lightBg, border: `1px solid ${colors.border}` }}>
         <input
           type="text"
-          placeholder="Start a new thread…"
+          placeholder="Thread title…"
           value={newTitle}
           onChange={e => setNewTitle(e.target.value)}
-          onKeyDown={e => e.key === 'Enter' && createThread()}
-          style={{ ...input.base, fontSize: 13 }}
+          style={{ ...input.base, fontSize: 13, marginBottom: 8 }}
         />
-        <button onClick={createThread} style={{ ...button.primary, whiteSpace: 'nowrap' }}>
-          Post
-        </button>
+        <textarea
+          placeholder="What's on your mind?"
+          value={newBody}
+          onChange={e => setNewBody(e.target.value)}
+          rows={3}
+          style={{ ...input.base, fontSize: 13, resize: 'vertical', marginBottom: 10 }}
+        />
+        <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+          <button
+            onClick={createThread}
+            disabled={!newTitle.trim() || !newBody.trim()}
+            style={{ ...button.primary, fontSize: 13, padding: '6px 16px', opacity: (!newTitle.trim() || !newBody.trim()) ? 0.5 : 1 }}
+          >
+            Post Thread
+          </button>
+        </div>
       </div>
 
       {threads.filter(t => !t.archived).length === 0 && (
@@ -448,18 +489,63 @@ function ThreadSection({ threads, onCreateThread, onAddReply, currentUser, isAdm
 
       {threads.filter(t => !t.archived).map(thread => {
         const isOpen = openThreads.has(thread.id);
+        const tv = threadVotes[thread.id] || { up: 0, down: 0, mine: null };
+        const toggle = () => setOpenThreads(prev => {
+          const next = new Set(prev);
+          if (next.has(thread.id)) next.delete(thread.id); else next.add(thread.id);
+          return next;
+        });
         return (
           <div key={thread.id} style={{ ...card, padding: '14px 18px', marginBottom: 10 }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-              <div
-                onClick={() => setOpenThreads(prev => {
-                  const next = new Set(prev);
-                  if (next.has(thread.id)) next.delete(thread.id); else next.add(thread.id);
-                  return next;
-                })}
-                style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flex: 1, minWidth: 0 }}
-              >
-                <div style={{ flex: 1, minWidth: 0 }}>
+            {/* Top row: OP post when open, collapsed summary when closed */}
+            <div style={{ display: 'flex', alignItems: isOpen ? 'flex-start' : 'center', gap: 8 }}>
+              {isOpen ? (
+                <>
+                  <MemberAvatar name={thread.author} size={28} />
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontFamily: fonts.body, fontSize: 12, color: colors.muted, marginBottom: 4 }}>
+                      {thread.author} · {thread.date}
+                    </div>
+                    <div style={{ fontFamily: fonts.body, fontWeight: 700, fontSize: 15, color: colors.text, marginBottom: thread.body ? 6 : 8 }}>
+                      {thread.title}
+                    </div>
+                    {thread.body && (
+                      <div style={{ fontFamily: fonts.body, fontSize: 13, color: colors.text, lineHeight: 1.55, marginBottom: 8 }}>
+                        {thread.body}
+                      </div>
+                    )}
+                    <div style={{ display: 'flex', gap: 6 }}>
+                      <button
+                        onClick={() => onVoteThread && onVoteThread(thread.id, 'up')}
+                        style={{
+                          background: tv.mine === 'up' ? `${colors.orange}18` : 'transparent',
+                          border: `1px solid ${tv.mine === 'up' ? colors.orange : colors.border}`,
+                          borderRadius: 4, padding: '2px 7px', cursor: 'pointer',
+                          display: 'flex', alignItems: 'center', gap: 4,
+                          fontFamily: fonts.body, fontSize: 12,
+                          color: tv.mine === 'up' ? colors.orange : colors.muted,
+                        }}
+                      >
+                        👍{tv.up > 0 ? ` ${tv.up}` : ''}
+                      </button>
+                      <button
+                        onClick={() => onVoteThread && onVoteThread(thread.id, 'down')}
+                        style={{
+                          background: tv.mine === 'down' ? `${colors.navy}18` : 'transparent',
+                          border: `1px solid ${tv.mine === 'down' ? colors.navy : colors.border}`,
+                          borderRadius: 4, padding: '2px 7px', cursor: 'pointer',
+                          display: 'flex', alignItems: 'center', gap: 4,
+                          fontFamily: fonts.body, fontSize: 12,
+                          color: tv.mine === 'down' ? colors.navy : colors.muted,
+                        }}
+                      >
+                        👎{tv.down > 0 ? ` ${tv.down}` : ''}
+                      </button>
+                    </div>
+                  </div>
+                </>
+              ) : (
+                <div onClick={toggle} style={{ flex: 1, minWidth: 0, cursor: 'pointer' }}>
                   <div style={{ fontFamily: fonts.body, fontWeight: 600, fontSize: 14, color: colors.text }}>
                     {thread.title}
                   </div>
@@ -467,40 +553,83 @@ function ThreadSection({ threads, onCreateThread, onAddReply, currentUser, isAdm
                     {thread.author} · {thread.date} · {thread.replies.length} repl{thread.replies.length !== 1 ? 'ies' : 'y'}
                   </div>
                 </div>
-                <span style={{ color: colors.muted, fontSize: 14, flexShrink: 0 }}>
+              )}
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0, marginTop: isOpen ? 2 : 0 }}>
+                <span onClick={toggle} style={{ cursor: 'pointer', color: colors.muted, fontSize: 14 }}>
                   {isOpen ? '▲' : '▼'}
                 </span>
+                {isAdmin && (
+                  <button
+                    onClick={() => onArchive(thread.id, true)}
+                    style={{ ...button.ghost, fontSize: 11, padding: '3px 8px', color: colors.muted, borderColor: colors.border }}
+                  >
+                    Archive
+                  </button>
+                )}
               </div>
-              {isAdmin && (
-                <button
-                  onClick={() => onArchive(thread.id, true)}
-                  style={{ ...button.ghost, fontSize: 11, padding: '3px 8px', color: colors.muted, borderColor: colors.border, flexShrink: 0 }}
-                >
-                  Archive
-                </button>
-              )}
             </div>
 
             {isOpen && (
               <div style={{ marginTop: 12 }}>
-                {thread.replies.map(r => (
-                  <div key={r.id} style={{
-                    padding: '10px 0',
-                    borderTop: `1px solid ${colors.border}`,
-                    display: 'flex',
-                    gap: 10,
-                  }}>
-                    <MemberAvatar name={r.author} size={28} />
-                    <div>
-                      <div style={{ fontFamily: fonts.body, fontSize: 12, fontWeight: 600, color: colors.text }}>
-                        {r.author} <span style={{ color: colors.muted, fontWeight: 400 }}>· {r.date}</span>
-                      </div>
-                      <div style={{ fontFamily: fonts.body, fontSize: 13, color: colors.text, marginTop: 2, lineHeight: 1.55 }}>
-                        {r.body}
+                {thread.replies.map(r => {
+                  const rv = replyVotes[r.id] || { up: 0, down: 0, mine: null };
+                  return (
+                    <div key={r.id} style={{
+                      padding: '10px 0',
+                      borderTop: `1px solid ${colors.border}`,
+                      display: 'flex',
+                      gap: 10,
+                    }}>
+                      <MemberAvatar name={r.author} size={28} />
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontFamily: fonts.body, fontSize: 12, fontWeight: 600, color: colors.text }}>
+                          {r.author} <span style={{ color: colors.muted, fontWeight: 400 }}>· {r.date}</span>
+                        </div>
+                        <div style={{ fontFamily: fonts.body, fontSize: 13, color: colors.text, marginTop: 2, lineHeight: 1.55 }}>
+                          {r.body}
+                        </div>
+                        <div style={{ display: 'flex', gap: 6, marginTop: 6 }}>
+                          <button
+                            onClick={() => onVoteReply && onVoteReply(r.id, 'up')}
+                            style={{
+                              background: rv.mine === 'up' ? `${colors.orange}18` : 'transparent',
+                              border: `1px solid ${rv.mine === 'up' ? colors.orange : colors.border}`,
+                              borderRadius: 4,
+                              padding: '2px 7px',
+                              cursor: 'pointer',
+                              display: 'flex',
+                              alignItems: 'center',
+                              gap: 4,
+                              fontFamily: fonts.body,
+                              fontSize: 12,
+                              color: rv.mine === 'up' ? colors.orange : colors.muted,
+                            }}
+                          >
+                            👍{rv.up > 0 ? ` ${rv.up}` : ''}
+                          </button>
+                          <button
+                            onClick={() => onVoteReply && onVoteReply(r.id, 'down')}
+                            style={{
+                              background: rv.mine === 'down' ? `${colors.navy}18` : 'transparent',
+                              border: `1px solid ${rv.mine === 'down' ? colors.navy : colors.border}`,
+                              borderRadius: 4,
+                              padding: '2px 7px',
+                              cursor: 'pointer',
+                              display: 'flex',
+                              alignItems: 'center',
+                              gap: 4,
+                              fontFamily: fonts.body,
+                              fontSize: 12,
+                              color: rv.mine === 'down' ? colors.navy : colors.muted,
+                            }}
+                          >
+                            👎{rv.down > 0 ? ` ${rv.down}` : ''}
+                          </button>
+                        </div>
                       </div>
                     </div>
-                  </div>
-                ))}
+                  );
+                })}
                 <div style={{ marginTop: 10, display: 'flex', gap: 8 }}>
                   <input
                     type="text"
@@ -520,25 +649,35 @@ function ThreadSection({ threads, onCreateThread, onAddReply, currentUser, isAdm
         );
       })}
 
-      {/* Archived threads — admin only */}
       {isAdmin && threads.filter(t => t.archived).length > 0 && (
-        <div style={{ marginTop: 20 }}>
-          <div style={{ fontFamily: fonts.body, fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.6px', color: colors.muted, marginBottom: 8 }}>
-            Archived Threads
-          </div>
-          {threads.filter(t => t.archived).map(thread => (
-            <div key={thread.id} style={{ ...card, padding: '10px 14px', marginBottom: 8, opacity: 0.65 }}>
+        <div style={{ marginTop: 12 }}>
+          <button
+            onClick={() => setShowArchive(v => !v)}
+            style={{ background: 'none', border: 'none', cursor: 'pointer', fontFamily: fonts.body, fontSize: 12, color: colors.muted, padding: '4px 0' }}
+          >
+            {showArchive ? 'Hide archive' : `Show archive (${threads.filter(t => t.archived).length})`}
+          </button>
+          {showArchive && threads.filter(t => t.archived).map(thread => (
+            <div key={thread.id} style={{ ...card, padding: '10px 14px', marginBottom: 8, opacity: 0.7 }}>
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
-                <div>
+                <div style={{ minWidth: 0 }}>
                   <div style={{ fontFamily: fonts.body, fontWeight: 600, fontSize: 13, color: colors.text }}>{thread.title}</div>
                   <div style={{ fontFamily: fonts.body, fontSize: 11, color: colors.muted }}>{thread.author} · {thread.date}</div>
                 </div>
-                <button
-                  onClick={() => onArchive(thread.id, false)}
-                  style={{ ...button.ghost, fontSize: 11, padding: '3px 8px', whiteSpace: 'nowrap', flexShrink: 0 }}
-                >
-                  Unarchive
-                </button>
+                <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
+                  <button
+                    onClick={() => onArchive(thread.id, false)}
+                    style={{ ...button.ghost, fontSize: 11, padding: '3px 8px', whiteSpace: 'nowrap' }}
+                  >
+                    Unarchive
+                  </button>
+                  <button
+                    onClick={() => { if (window.confirm('Permanently delete this thread and all its replies?')) onDelete(thread.id); }}
+                    style={{ ...button.danger, fontSize: 11, padding: '3px 8px', whiteSpace: 'nowrap' }}
+                  >
+                    Delete
+                  </button>
+                </div>
               </div>
             </div>
           ))}
@@ -881,6 +1020,9 @@ export default function SquadPage({ navigateTo }) {
   const [activeSquadId, setActiveSquadId] = useState(null);
   const [polls, setPolls] = useState([]);
   const [threads, setThreads] = useState([]);
+  const [replyVotes, setReplyVotes] = useState({});
+  const [threadVotes, setThreadVotes] = useState({});
+  const [showPollArchive, setShowPollArchive] = useState(false);
   const [topGames, setTopGames] = useState([]);
   const [squadWishlist, setSquadWishlist] = useState([]);
   const [detailLoading, setDetailLoading] = useState(false);
@@ -993,7 +1135,7 @@ export default function SquadPage({ navigateTo }) {
   async function loadThreads(squadId) {
     const { data: threadRows } = await supabase
       .from('threads')
-      .select('id, title, created_at, user_id, archived')
+      .select('id, title, body, created_at, user_id, archived')
       .eq('squad_id', squadId)
       .order('created_at', { ascending: false });
 
@@ -1019,9 +1161,37 @@ export default function SquadPage({ navigateTo }) {
 
     const profileMap = Object.fromEntries((profileRows || []).map(p => [p.id, p.username]));
 
+    const replyIds = (replyRows || []).map(r => r.id);
+    let replyVoteMap = {};
+    if (replyIds.length) {
+      const { data: rvRows } = await supabase
+        .from('reply_votes')
+        .select('reply_id, vote, user_id')
+        .in('reply_id', replyIds);
+      for (const v of (rvRows || [])) {
+        if (!replyVoteMap[v.reply_id]) replyVoteMap[v.reply_id] = { up: 0, down: 0, mine: null };
+        replyVoteMap[v.reply_id][v.vote]++;
+        if (v.user_id === user?.id) replyVoteMap[v.reply_id].mine = v.vote;
+      }
+    }
+    setReplyVotes(replyVoteMap);
+
+    let threadVoteMap = {};
+    const { data: tvRows } = await supabase
+      .from('thread_votes')
+      .select('thread_id, vote, user_id')
+      .in('thread_id', threadIds);
+    for (const v of (tvRows || [])) {
+      if (!threadVoteMap[v.thread_id]) threadVoteMap[v.thread_id] = { up: 0, down: 0, mine: null };
+      threadVoteMap[v.thread_id][v.vote]++;
+      if (v.user_id === user?.id) threadVoteMap[v.thread_id].mine = v.vote;
+    }
+    setThreadVotes(threadVoteMap);
+
     const assembled = threadRows.map(t => ({
       id: t.id,
       title: t.title,
+      body: t.body || null,
       author: profileMap[t.user_id] || 'unknown',
       date: formatDate(t.created_at),
       archived: t.archived || false,
@@ -1347,10 +1517,10 @@ export default function SquadPage({ navigateTo }) {
     }
   }
 
-  async function createThread(title) {
+  async function createThread(title, body) {
     const { error } = await supabase
       .from('threads')
-      .insert({ squad_id: resolvedId, user_id: user.id, title });
+      .insert({ squad_id: resolvedId, user_id: user.id, title, body });
     if (!error) {
       await loadThreads(resolvedId);
       const recipientIds = await getSubscribedMemberIds(resolvedId, 'thread_created');
@@ -1397,6 +1567,56 @@ export default function SquadPage({ navigateTo }) {
     }
   }
 
+  async function handleReplyVote(replyId, dir) {
+    if (!isLoggedIn) return;
+    const current = replyVotes[replyId] || { up: 0, down: 0, mine: null };
+    const next = { ...current };
+    if (current.mine === dir) {
+      next[dir] = Math.max(0, next[dir] - 1);
+      next.mine = null;
+    } else {
+      if (current.mine) next[current.mine] = Math.max(0, next[current.mine] - 1);
+      next[dir]++;
+      next.mine = dir;
+    }
+    setReplyVotes(v => ({ ...v, [replyId]: next }));
+
+    if (current.mine === dir) {
+      const { error } = await supabase.from('reply_votes').delete()
+        .eq('user_id', user.id).eq('reply_id', replyId);
+      if (error) setReplyVotes(v => ({ ...v, [replyId]: current }));
+    } else {
+      const { error } = await supabase.from('reply_votes')
+        .upsert({ user_id: user.id, reply_id: replyId, vote: dir }, { onConflict: 'user_id,reply_id' });
+      if (error) setReplyVotes(v => ({ ...v, [replyId]: current }));
+    }
+  }
+
+  async function handleThreadVote(threadId, dir) {
+    if (!isLoggedIn) return;
+    const current = threadVotes[threadId] || { up: 0, down: 0, mine: null };
+    const next = { ...current };
+    if (current.mine === dir) {
+      next[dir] = Math.max(0, next[dir] - 1);
+      next.mine = null;
+    } else {
+      if (current.mine) next[current.mine] = Math.max(0, next[current.mine] - 1);
+      next[dir]++;
+      next.mine = dir;
+    }
+    setThreadVotes(v => ({ ...v, [threadId]: next }));
+
+    if (current.mine === dir) {
+      const { error } = await supabase.from('thread_votes').delete()
+        .eq('user_id', user.id).eq('thread_id', threadId);
+      if (error) setThreadVotes(v => ({ ...v, [threadId]: current }));
+    } else {
+      const { error } = await supabase.from('thread_votes')
+        .upsert({ user_id: user.id, thread_id: threadId, vote: dir }, { onConflict: 'user_id,thread_id' });
+      if (error) setThreadVotes(v => ({ ...v, [threadId]: current }));
+    }
+  }
+
   async function saveMeetup(squadId) {
     if (!meetupInput) return;
     await supabase.from('squads').update({ meetup_date: meetupInput }).eq('id', squadId);
@@ -1439,6 +1659,16 @@ export default function SquadPage({ navigateTo }) {
       await insertNotifications(memberIds, resolvedId, 'thread_archived',
         `${currentUser} archived a thread in ${currentSquad.name}: ${thread.title}`);
     }
+  }
+
+  async function deletePoll(pollId) {
+    setPolls(prev => prev.filter(p => p.id !== pollId));
+    await supabase.from('polls').delete().eq('id', pollId);
+  }
+
+  async function deleteThread(threadId) {
+    setThreads(prev => prev.filter(t => t.id !== threadId));
+    await supabase.from('threads').delete().eq('id', threadId);
   }
 
   async function deleteSquad(squadId) {
@@ -2332,22 +2562,26 @@ export default function SquadPage({ navigateTo }) {
                       castVote={i => castVote(poll.id, i)}
                       isAdmin={isAdmin}
                       onArchive={archivePoll}
+                      onDelete={deletePoll}
                       accentColor={squadAccentColor}
                     />
                   ))}
-                  {/* Archived polls — admin only */}
                   {isAdmin && polls.filter(p => p.archived).length > 0 && (
-                    <div style={{ marginTop: 16 }}>
-                      <div style={{ fontFamily: fonts.body, fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.6px', color: colors.muted, marginBottom: 8 }}>
-                        Archived Polls
-                      </div>
-                      {polls.filter(p => p.archived).map(poll => (
+                    <div style={{ marginTop: 8 }}>
+                      <button
+                        onClick={() => setShowPollArchive(v => !v)}
+                        style={{ background: 'none', border: 'none', cursor: 'pointer', fontFamily: fonts.body, fontSize: 12, color: colors.muted, padding: '4px 0' }}
+                      >
+                        {showPollArchive ? 'Hide archive' : `Show archive (${polls.filter(p => p.archived).length})`}
+                      </button>
+                      {showPollArchive && polls.filter(p => p.archived).map(poll => (
                         <PollSection
                           key={poll.id}
                           poll={poll}
                           castVote={i => castVote(poll.id, i)}
                           isAdmin={isAdmin}
                           onArchive={archivePoll}
+                          onDelete={deletePoll}
                           accentColor={squadAccentColor}
                         />
                       ))}
@@ -2406,6 +2640,11 @@ export default function SquadPage({ navigateTo }) {
                     currentUser={currentUser}
                     isAdmin={isAdmin}
                     onArchive={archiveThread}
+                    onDelete={deleteThread}
+                    replyVotes={replyVotes}
+                    onVoteReply={handleReplyVote}
+                    threadVotes={threadVotes}
+                    onVoteThread={handleThreadVote}
                   />
                 </div>
               </>

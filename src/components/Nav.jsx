@@ -6,7 +6,7 @@ import { supabase } from '../lib/supabase';
 import NavAuth from './auth/NavAuth';
 
 const NAV_LINKS = [
-  { label: 'Home', page: 'home' },
+  { label: 'My Feed', page: 'feed' },
   { label: 'My Profile', page: 'player' },
   { label: 'My Squads', page: 'squad' },
 ];

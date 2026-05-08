@@ -4,6 +4,7 @@ import { supabase } from '../lib/supabase';
 import { games } from '../data/games';
 import { getGameById as getIgdbGame } from '../lib/igdb';
 import { GENRE_COLORS, StarDisplay } from '../components/GameCard';
+import { useAuth } from '../contexts/AuthContext';
 
 function contrastFor(hex) {
   if (!hex) return '#1A1A1A';
@@ -52,6 +53,7 @@ function CoverThumb({ game, width = 32, height = 32, radius = 6 }) {
 }
 
 export default function ProfilePage({ userId, navigateTo }) {
+  const { user, isLoggedIn } = useAuth();
   const [profile, setProfile] = useState(null);
   const [top10Ids, setTop10Ids] = useState([]);
   const [reviews, setReviews] = useState([]);
@@ -59,6 +61,8 @@ export default function ProfilePage({ userId, navigateTo }) {
   const [aboutAnswers, setAboutAnswers] = useState([]);
   const [wishlistIds, setWishlistIds] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [isFollowing, setIsFollowing] = useState(false);
+  const [followerCount, setFollowerCount] = useState(0);
 
   // IGDB resolution maps
   const [igdbGames, setIgdbGames] = useState({});
@@ -76,13 +80,15 @@ export default function ProfilePage({ userId, navigateTo }) {
     setIgdbGames({});
 
     async function fetchAll() {
-      const [profileRes, top10Res, reviewsRes, genreFavsRes, aboutRes, wishlistRes] = await Promise.all([
+      const [profileRes, top10Res, reviewsRes, genreFavsRes, aboutRes, wishlistRes, followersRes, myFollowRes] = await Promise.all([
         supabase.from('profiles').select('username, avatar_url, bg_color, now_playing_game_id').eq('id', userId).single(),
         supabase.from('top10').select('game_id, rank').eq('user_id', userId).order('rank', { ascending: true }).limit(10),
         supabase.from('reviews').select('id, game_id, rating, body, created_at').eq('user_id', userId).order('created_at', { ascending: false }).limit(3),
         supabase.from('genre_favorites').select('genre, game_id, genre_id, genre_name').eq('user_id', userId),
         supabase.from('about_me').select('question_key, answer').eq('user_id', userId).limit(3),
         supabase.from('wishlist').select('game_id').eq('user_id', userId),
+        supabase.from('follows').select('follower_id').eq('following_id', userId),
+        user ? supabase.from('follows').select('follower_id').eq('follower_id', user.id).eq('following_id', userId).maybeSingle() : Promise.resolve({ data: null }),
       ]);
       if (cancelled) return;
       setProfile(profileRes.data || null);
@@ -91,6 +97,8 @@ export default function ProfilePage({ userId, navigateTo }) {
       setGenreFavSlots((genreFavsRes.data || []).sort((a, b) => a.genre - b.genre));
       setAboutAnswers((aboutRes.data || []).map(r => ({ question: r.question_key, answer: r.answer })));
       setWishlistIds((wishlistRes.data || []).map(r => r.game_id));
+      setFollowerCount((followersRes.data || []).length);
+      setIsFollowing(!!myFollowRes.data);
       setLoading(false);
     }
     fetchAll();
@@ -117,6 +125,18 @@ export default function ProfilePage({ userId, navigateTo }) {
         setIgdbGames(prev => ({ ...prev, ...map }));
       });
   }, [loading, profile?.now_playing_game_id, top10Ids, reviews, genreFavSlots, wishlistIds]); // eslint-disable-line
+
+  async function toggleFollow() {
+    if (!isLoggedIn) { navigateTo('player'); return; }
+    const prev = isFollowing;
+    setIsFollowing(!prev);
+    setFollowerCount(c => prev ? c - 1 : c + 1);
+    if (prev) {
+      await supabase.from('follows').delete().eq('follower_id', user.id).eq('following_id', userId);
+    } else {
+      await supabase.from('follows').insert({ follower_id: user.id, following_id: userId });
+    }
+  }
 
   if (loading) return null;
 
@@ -173,9 +193,17 @@ export default function ProfilePage({ userId, navigateTo }) {
             {profile.username}
           </h1>
           <div style={{ fontFamily: fonts.body, fontSize: 13, color: profile.bg_color ? (isHeaderDark ? 'rgba(255,255,255,0.6)' : 'rgba(0,0,0,0.5)') : colors.muted, marginTop: 2 }}>
-            {top10Ids.length} in top 10 · {wishlistIds.length} wishlisted
+            {top10Ids.length} in top 10 · {wishlistIds.length} wishlisted · {followerCount} {followerCount === 1 ? 'follower' : 'followers'}
           </div>
         </div>
+        {isLoggedIn && user?.id !== userId && (
+          <button
+            onClick={toggleFollow}
+            style={{ ...( isFollowing ? button.ghost : button.primary ), padding: '6px 16px', fontSize: 13, marginLeft: 'auto', flexShrink: 0 }}
+          >
+            {isFollowing ? 'Following' : 'Follow'}
+          </button>
+        )}
       </div>
 
       {/* Now Playing */}

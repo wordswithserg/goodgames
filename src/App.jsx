@@ -5,6 +5,7 @@ import { getGameById } from './data/games';
 import Nav from './components/Nav';
 import LoadingScreen from './components/LoadingScreen';
 import Home from './pages/Home';
+import FeedPage from './pages/FeedPage';
 import GamePage from './pages/GamePage';
 import PlayerPage from './pages/PlayerPage';
 import ProfilePage from './pages/ProfilePage';
@@ -28,7 +29,7 @@ export default function App() {
 
   const [currentPage, setCurrentPage] = useState(() => {
     if (window.location.pathname === '/reset-password') return 'reset-password';
-    return load('gg_currentPage', 'home');
+    return load('gg_currentPage', 'feed');
   });
   const [selectedGame, setSelectedGame] = useState(() => {
     const id = load('gg_selectedGameId', null);
@@ -69,6 +70,9 @@ export default function App() {
         navigateTo={navigateTo}
       />
       <main>
+        {currentPage === 'feed' && (
+          <FeedPage navigateTo={navigateTo} />
+        )}
         {currentPage === 'home' && (
           <Home navigateTo={navigateTo} currentUser={currentUser} />
         )}
