@@ -103,7 +103,7 @@ export default function ProfilePage({ userId, navigateTo }) {
     }
     fetchAll();
     return () => { cancelled = true; };
-  }, [userId]);
+  }, [userId, user]);
 
   // Resolve all IGDB ids from all sections in one effect
   useEffect(() => {
